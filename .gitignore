@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.swp
+.ipynb_checkpoints/
+
+# data & outputs
+/data/
+/outputs/
+*.hdf5
+
+# OS
+.DS_Store
