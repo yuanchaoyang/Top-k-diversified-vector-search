@@ -107,3 +107,90 @@ def mmr_rerank(
     )
 
     return cand_indices[np.array(sel_local, dtype=np.int64)].astype(np.int32)
+
+
+def mmr_rerank_incremental(
+    q: np.ndarray,
+    cand_indices: np.ndarray,
+    xb: np.ndarray,
+    *,
+    k: int,
+    lambda_: float,
+    use_max_redundancy: bool = True,
+) -> np.ndarray:
+    """MMR rerank with *incremental* redundancy updates.
+
+    This version avoids building the full (N,N) candidate similarity matrix.
+    Instead it maintains, for each candidate, its redundancy to the selected set
+    and updates it in O(N·d) each time we add one new selected vector.
+
+    Complexity per query:
+      - time:  O(k · N · d)
+      - memory: O(N)
+
+    Args:
+        q: (d,) normalized query
+        cand_indices: (N,) candidate ids into xb (should be topN by relevance)
+        xb: (nb, d) normalized database vectors
+        k: final top-k
+        lambda_: tradeoff parameter in [0, 1]
+        use_max_redundancy: if True use max similarity to selected set; else mean
+
+    Returns:
+        (k,) selected ids (subset of cand_indices) in selection order.
+    """
+    cand_indices = np.asarray(cand_indices, dtype=np.int64).reshape(-1)
+    N = int(cand_indices.shape[0])
+    if N == 0 or k <= 0:
+        return cand_indices[:0].astype(np.int32)
+
+    cand_vecs = np.asarray(xb[cand_indices], dtype=np.float32)
+    q = np.asarray(q, dtype=np.float32).reshape(-1)
+
+    k_eff = int(min(int(k), N))
+    lam = float(lambda_)
+
+    # relevance: cosine(q, x) = x @ q when normalized
+    sim_q = cand_vecs @ q  # (N,)
+
+    selected: List[int] = []
+    used = np.zeros(N, dtype=bool)
+
+    # pick the most relevant item first (standard in diversified retrieval)
+    first = int(np.argmax(sim_q))
+    selected.append(first)
+    used[first] = True
+
+    # redundancy trackers for all candidates
+    # - max redundancy: keep max similarity to any selected
+    # - mean redundancy: keep sum similarity to selected, divide by |S|
+    max_sim = np.zeros(N, dtype=np.float32)
+    sum_sim = np.zeros(N, dtype=np.float32)
+
+    sims = cand_vecs @ cand_vecs[first]  # (N,)
+    if use_max_redundancy:
+        max_sim = sims
+    else:
+        sum_sim = sims
+
+    for t in range(1, k_eff):
+        if use_max_redundancy:
+            redundancy = max_sim
+        else:
+            redundancy = sum_sim / float(t)
+
+        scores = lam * sim_q - (1.0 - lam) * redundancy
+        scores = scores.astype(np.float32, copy=False)
+        scores[used] = -np.inf
+
+        best = int(np.argmax(scores))
+        selected.append(best)
+        used[best] = True
+
+        sims = cand_vecs @ cand_vecs[best]
+        if use_max_redundancy:
+            max_sim = np.maximum(max_sim, sims)
+        else:
+            sum_sim += sims
+
+    return cand_indices[np.array(selected, dtype=np.int64)].astype(np.int32)

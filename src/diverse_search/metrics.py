@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
 
-def recall_at_k(pred: np.ndarray, gt: np.ndarray, k: int) -> float:
-    """Compute Recall@k against ground truth neighbors.
+def recall_at_k(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    k: int,
+    *,
+    max_index: Optional[int] = None,
+) -> float:
+    """Compute Recall@k against ground-truth neighbor ids.
 
-    pred: (nq, k) predicted ids
-    gt:   (nq, >=k) ground truth ids
+    Args:
+        pred: (nq, k) predicted ids.
+        gt:   (nq, >=k) ground truth ids.
+        k:    cutoff.
+        max_index: Optional upper bound for valid ids in gt.
+            This is useful when you sub-sample the database vectors: GT ids that
+            point outside the retained subset would be impossible to retrieve.
+
+    Returns:
+        Recall@k in [0, 1].
     """
     pred = np.asarray(pred, dtype=np.int64)
     gt = np.asarray(gt, dtype=np.int64)
@@ -22,14 +36,25 @@ def recall_at_k(pred: np.ndarray, gt: np.ndarray, k: int) -> float:
 
     k = int(k)
     gt_k = gt[:, :k]
+
     hit = 0
-    total = pred.shape[0] * k
+    denom = 0
 
-    # For each query, count intersection size between pred and gt_k
+    # For each query, count intersection size between pred and gt_k.
+    # If max_index is provided, ignore gt ids >= max_index.
     for i in range(pred.shape[0]):
-        hit += len(set(pred[i, :k].tolist()) & set(gt_k[i].tolist()))
+        pred_i = set(pred[i, :k].tolist())
+        gt_i = gt_k[i]
+        if max_index is not None:
+            gt_i = gt_i[gt_i < int(max_index)]
+        gt_set = set(gt_i.tolist())
+        if len(gt_set) == 0:
+            continue
+        hit += len(pred_i & gt_set)
+        denom += len(gt_set)
 
-    return float(hit) / float(total)
+    # If denom==0, return NaN to signal recall is not computable.
+    return float(hit) / float(denom) if denom > 0 else float("nan")
 
 
 def mean_cosine_to_query(q: np.ndarray, selected_vecs: np.ndarray) -> float:
@@ -71,12 +96,24 @@ def max_pairwise_cosine(selected_vecs: np.ndarray) -> float:
     return float(gram[iu].max())
 
 
+def coverage_unique(labels: np.ndarray) -> int:
+    """Number of unique labels (topics/clusters) in a result list."""
+    labels = np.asarray(labels)
+    if labels.size == 0:
+        return 0
+    # ignore "unknown" labels if you use -1 as a sentinel
+    labels = labels[labels >= 0]
+    return int(np.unique(labels).size)
+
+
 @dataclass
 class AggMetrics:
     recall: Optional[float]
     rel_mean_cos: float
     redundancy_avg_cos: float
     redundancy_max_cos: float
+    coverage_unique: Optional[float] = None
+    coverage_ratio: Optional[float] = None
 
     @property
     def ild(self) -> float:
