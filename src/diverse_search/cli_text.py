@@ -12,6 +12,12 @@ from .diversify import threshold_greedy_rerank, maxmin_rerank
 from .metrics import mean_cosine_to_query, avg_pairwise_cosine
 from .cluster import KMeansConfig, kmeans_cluster_labels
 
+# PYTHONPATH=src python -m diverse_search.cli_text \
+#   --corpus data/corpus_words.txt \
+#   --embeddings data/corpus_words_embeddings.npy \
+#   --k 10 --topN 200 --methods baseline mmr threshold maxmin
+
+
 
 def l2_normalize(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """Row-wise L2 normalize."""

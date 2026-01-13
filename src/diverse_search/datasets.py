@@ -12,14 +12,12 @@ from tqdm import tqdm
 
 
 DATASET_URLS = {
-    # Angular / cosine (推荐：和你当前实现一致)
     "glove-25-angular": "http://ann-benchmarks.com/glove-25-angular.hdf5",
     "glove-50-angular": "http://ann-benchmarks.com/glove-50-angular.hdf5",
     "glove-100-angular": "http://ann-benchmarks.com/glove-100-angular.hdf5",
     "nytimes-256-angular": "http://ann-benchmarks.com/nytimes-256-angular.hdf5",
     "lastfm-64-dot": "http://ann-benchmarks.com/lastfm-64-dot.hdf5",
 
-    # Euclidean（先别在 Day2 主实验用；你现在实现是 cosine）
     "sift-128-euclidean": "http://ann-benchmarks.com/sift-128-euclidean.hdf5",
 }
 
