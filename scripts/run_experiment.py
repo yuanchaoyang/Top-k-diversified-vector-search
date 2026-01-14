@@ -44,7 +44,7 @@ def make_plot(df, out_path: Path) -> None:
 
     # annotate baseline and mmr points
     for _, row in df.iterrows():
-        label = "baseline" if row["method"] == "baseline" else f"mmr λ={row['lambda']:.2f}"
+        label = "baseline" if row["method"] == "baseline" else f"{row['method']} λ={row['lambda']:.2f}"
         plt.scatter([row["ild"]], [row["recall"] if has_recall else row["rel_mean_cos"]])
         plt.annotate(label, (row["ild"], row["recall"] if has_recall else row["rel_mean_cos"]), fontsize=8)
 

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from .adaptive_lambda import AdaptiveLambdaConfig, batch_adaptive_lambdas
 from .index import BaseRetriever
 from .metrics import (
     AggMetrics,
@@ -172,6 +173,85 @@ def evaluate_mmr(
     return out
 
 
+def evaluate_mmr_adaptive(
+    retriever: BaseRetriever,
+    xb: np.ndarray,
+    queries: np.ndarray,
+    *,
+    k: int,
+    topN: int,
+    lambda_cfg: AdaptiveLambdaConfig,
+    gt_neighbors: Optional[np.ndarray] = None,
+    cluster_labels: Optional[np.ndarray] = None,
+    use_max_redundancy: bool = True,
+    impl: str = "full",
+) -> Dict:
+    """MMR with a query-adaptive lambda estimated from candidate scores."""
+
+    t0 = time.time()
+    res = retriever.search(queries, topN)
+    cand = res.indices  # (nq, topN)
+    cand_scores = res.scores  # (nq, topN)
+    t_retrieve = time.time()
+
+    nq = cand.shape[0]
+    selected = np.empty((nq, k), dtype=np.int32)
+
+    lambdas = batch_adaptive_lambdas(cand_scores, lambda_cfg)
+    rerank_fn = mmr_rerank if impl == "full" else mmr_rerank_incremental
+
+    for qi in range(nq):
+        selected[qi] = rerank_fn(
+            queries[qi],
+            cand[qi],
+            xb,
+            k=k,
+            lambda_=float(lambdas[qi]),
+            use_max_redundancy=use_max_redundancy,
+        )
+
+    t1 = time.time()
+
+    agg = _compute_agg_metrics(
+        xb=xb,
+        queries=queries,
+        selected_ids=selected,
+        gt_neighbors=gt_neighbors,
+        cluster_labels=cluster_labels,
+        k=k,
+    )
+
+    out = {
+        "method": "mmr_adaptive",
+        "lambda": float(lambdas.mean()),
+        "lambda_min": float(lambdas.min()),
+        "lambda_max": float(lambdas.max()),
+        "lambda_std": float(lambdas.std()),
+        "tau": None,
+        "k": k,
+        "topN": topN,
+        "retrieve_time_sec": float(t_retrieve - t0),
+        "rerank_time_sec": float(t1 - t_retrieve),
+        "search_time_sec": float(t1 - t0),
+        "impl": impl,
+        **asdict(agg),
+        "ild": float(agg.ild),
+        "adaptive_lambda_min": float(lambda_cfg.lambda_min),
+        "adaptive_lambda_max": float(lambda_cfg.lambda_max),
+        "adaptive_lambda_mid": float(lambda_cfg.lambda_mid),
+        "adaptive_lambda_strategy": str(lambda_cfg.strategy),
+        "adaptive_lambda_temperature": float(lambda_cfg.temperature),
+        "adaptive_lambda_entropy_power": float(lambda_cfg.entropy_power),
+        "adaptive_lambda_topM": (
+            int(lambda_cfg.topM) if lambda_cfg.topM is not None else None
+        ),
+        "adaptive_gap_k": int(lambda_cfg.gap_k),
+        "adaptive_gap_low": float(lambda_cfg.gap_t_low),
+        "adaptive_gap_high": float(lambda_cfg.gap_t_high),
+    }
+    return out
+
+
 def evaluate_threshold(
     retriever: BaseRetriever,
     xb: np.ndarray,
@@ -292,6 +372,7 @@ def run_sweep(
     k: int,
     topN: int,
     lambdas: Sequence[float],
+    adaptive_lambda_cfg: Optional[AdaptiveLambdaConfig] = None,
     gt_neighbors: Optional[np.ndarray] = None,
     cluster_labels: Optional[np.ndarray] = None,
     use_max_redundancy: bool = True,
@@ -302,6 +383,7 @@ def run_sweep(
     """Run baseline + diversified rerank methods.
 
     By default it runs: baseline + MMR(lambda sweep).
+    You can add query-adaptive MMR by including "mmr_adaptive" in methods.
     You can add additional baselines by setting `methods` and providing `taus`.
     """
 
@@ -340,6 +422,23 @@ def run_sweep(
                     impl=mmr_impl,
                 )
             )
+
+    if "mmr_adaptive" in methods_set:
+        cfg = adaptive_lambda_cfg or AdaptiveLambdaConfig()
+        rows.append(
+            evaluate_mmr_adaptive(
+                retriever,
+                xb,
+                queries,
+                k=k,
+                topN=topN,
+                lambda_cfg=cfg,
+                gt_neighbors=gt_neighbors,
+                cluster_labels=cluster_labels,
+                use_max_redundancy=use_max_redundancy,
+                impl=mmr_impl,
+            )
+        )
 
     if "threshold" in methods_set:
         if not taus:

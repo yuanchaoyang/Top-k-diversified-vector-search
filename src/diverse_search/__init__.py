@@ -13,6 +13,7 @@ from .index import build_retriever
 from .mmr import mmr_rerank
 from .experiment import run_sweep
 from .search_api import diversified_search, DiversifiedSearchRequest
+from .adaptive_lambda import AdaptiveLambdaConfig, adaptive_lambda_from_scores
 
 __all__ = [
     "load_hdf5",
@@ -22,4 +23,6 @@ __all__ = [
     "run_sweep",
     "diversified_search",
     "DiversifiedSearchRequest",
+    "AdaptiveLambdaConfig",
+    "adaptive_lambda_from_scores",
 ]

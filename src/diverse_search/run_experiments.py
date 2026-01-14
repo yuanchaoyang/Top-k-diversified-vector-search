@@ -10,8 +10,9 @@ Typical usage :
     --index-type hnsw \
     --k 10 --topN 200 \
     --max-train 50000 --max-test 500 \
-    --methods baseline mmr threshold maxmin \
-    --lambdas 0,0.2,0.4,0.6,0.8,1.0 \
+    --methods baseline mmr mmr_adaptive threshold maxmin \
+    --lambdas 0.8 \
+    --adaptive-lambda-range 0.6,0.95 \
     --taus 0.7,0.8,0.9 \
     --clusters 100 \
     --out-dir outputs
@@ -27,6 +28,7 @@ from typing import List, Sequence
 
 import numpy as np
 
+from .adaptive_lambda import AdaptiveLambdaConfig
 from .cluster import KMeansConfig, kmeans_cluster_labels
 from .datasets import DATASET_URLS, download_dataset, load_hdf5
 from .experiment import run_sweep
@@ -71,13 +73,68 @@ def main() -> None:
         type=str,
         nargs="+",
         default=["baseline", "mmr"],
-        help="Any of: baseline mmr threshold maxmin",
+        help="Any of: baseline mmr mmr_adaptive threshold maxmin",
     )
     p.add_argument(
         "--lambdas",
         type=str,
         default="0,0.2,0.4,0.6,0.8,1.0",
         help="Comma separated list, used for MMR sweep",
+    )
+    p.add_argument(
+        "--adaptive-lambda-range",
+        type=str,
+        default="0.6,0.95",
+        help="min,max for query-adaptive lambda (used when methods includes mmr_adaptive)",
+    )
+    p.add_argument(
+        "--adaptive-lambda-strategy",
+        type=str,
+        default="gap_piecewise",
+        choices=["gap_piecewise", "entropy"],
+        help="gap_piecewise (top1-topK heuristic) or entropy (softmax entropy)",
+    )
+    p.add_argument(
+        "--adaptive-lambda-temperature",
+        type=float,
+        default=0.08,
+        help="Softmax temperature for ambiguity estimation (lower -> sharper)",
+    )
+    p.add_argument(
+        "--adaptive-lambda-entropy-power",
+        type=float,
+        default=1.0,
+        help="Exponent to re-shape entropy before mapping to lambda (>1 pushes to extremes)",
+    )
+    p.add_argument(
+        "--adaptive-lambda-topM",
+        type=int,
+        default=50,
+        help="Use only the topM candidate scores when estimating entropy (<=0 disables)",
+    )
+    p.add_argument(
+        "--adaptive-gap-k",
+        type=int,
+        default=10,
+        help="gap = s1 - s_k for gap_piecewise strategy",
+    )
+    p.add_argument(
+        "--adaptive-gap-low",
+        type=float,
+        default=0.02,
+        help="If gap <= this, use lambda_min (gap_piecewise)",
+    )
+    p.add_argument(
+        "--adaptive-gap-high",
+        type=float,
+        default=0.08,
+        help="If gap >= this, use lambda_max (gap_piecewise)",
+    )
+    p.add_argument(
+        "--adaptive-gap-lambda-mid",
+        type=float,
+        default=0.8,
+        help="Lambda to use when gap is between low/high (gap_piecewise)",
     )
     p.add_argument(
         "--taus",
@@ -139,6 +196,21 @@ def main() -> None:
     methods = _parse_methods(args.methods)
     lambdas = _parse_csv_floats(args.lambdas)
     taus = _parse_csv_floats(args.taus)
+    adaptive_range = _parse_csv_floats(args.adaptive_lambda_range)
+    if len(adaptive_range) != 2:
+        raise ValueError("--adaptive-lambda-range must have two values: min,max")
+    adaptive_cfg = AdaptiveLambdaConfig(
+        lambda_min=float(adaptive_range[0]),
+        lambda_max=float(adaptive_range[1]),
+        lambda_mid=float(args.adaptive_gap_lambda_mid),
+        strategy=str(args.adaptive_lambda_strategy),
+        temperature=float(args.adaptive_lambda_temperature),
+        entropy_power=float(args.adaptive_lambda_entropy_power),
+        topM=int(args.adaptive_lambda_topM) if int(args.adaptive_lambda_topM) > 0 else None,
+        gap_k=int(args.adaptive_gap_k),
+        gap_t_low=float(args.adaptive_gap_low),
+        gap_t_high=float(args.adaptive_gap_high),
+    )
 
     df = run_sweep(
         retriever,
@@ -152,6 +224,7 @@ def main() -> None:
         gt_neighbors=ds.neighbors,
         cluster_labels=cluster_labels,
         mmr_impl="full" if args.mmr_impl == "full" else "incremental",
+        adaptive_lambda_cfg=adaptive_cfg,
     )
 
     out_dir = Path(args.out_dir)

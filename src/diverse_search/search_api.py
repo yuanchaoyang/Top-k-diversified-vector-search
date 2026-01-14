@@ -21,6 +21,7 @@ from typing import Dict, Literal, Optional
 
 import numpy as np
 
+from .adaptive_lambda import AdaptiveLambdaConfig, adaptive_lambda_from_scores
 from .index import BaseRetriever
 from .diversify import maxmin_rerank, threshold_greedy_rerank
 from .mmr import mmr_rerank, mmr_rerank_incremental
@@ -43,6 +44,17 @@ class DiversifiedSearchRequest:
 
     # method parameters
     lambda_: float = 0.5  # for MMR
+    adaptive_lambda: bool = False  # if True, override lambda_ per-query
+    adaptive_lambda_strategy: str = "gap_piecewise"
+    adaptive_lambda_min: float = 0.2
+    adaptive_lambda_max: float = 0.95
+    adaptive_lambda_mid: float = 0.8  # only used by gap_piecewise
+    adaptive_lambda_temperature: float = 0.08
+    adaptive_lambda_entropy_power: float = 1.0
+    adaptive_lambda_topM: int = 50
+    adaptive_gap_k: int = 10
+    adaptive_gap_low: float = 0.02
+    adaptive_gap_high: float = 0.08
     tau: float = 0.8  # for threshold greedy
 
     # implementation choices
@@ -119,6 +131,22 @@ def diversified_search(
     # 2) rerank
     selected = np.empty((nq, k), dtype=np.int32)
     method = request.method.lower()
+    adaptive_cfg: Optional[AdaptiveLambdaConfig] = None
+    adaptive_lambdas = None
+    if method == "mmr" and request.adaptive_lambda:
+        adaptive_cfg = AdaptiveLambdaConfig(
+            strategy=str(request.adaptive_lambda_strategy),
+            lambda_min=float(request.adaptive_lambda_min),
+            lambda_max=float(request.adaptive_lambda_max),
+            lambda_mid=float(request.adaptive_lambda_mid),
+            temperature=float(request.adaptive_lambda_temperature),
+            entropy_power=float(request.adaptive_lambda_entropy_power),
+            topM=int(request.adaptive_lambda_topM) if int(request.adaptive_lambda_topM) > 0 else None,
+            gap_k=int(request.adaptive_gap_k),
+            gap_t_low=float(request.adaptive_gap_low),
+            gap_t_high=float(request.adaptive_gap_high),
+        )
+        adaptive_lambdas = np.empty((nq,), dtype=np.float32)
 
     for i in range(nq):
         cand_i = cand[i]
@@ -126,13 +154,19 @@ def diversified_search(
         if method == "baseline":
             sel = cand_i[:k]
         elif method == "mmr":
+            lam = float(request.lambda_)
+            if adaptive_cfg is not None:
+                lam = adaptive_lambda_from_scores(cand_scores[i], adaptive_cfg)
+                if adaptive_lambdas is not None:
+                    adaptive_lambdas[i] = lam
+
             if request.mmr_impl == "full":
                 sel = mmr_rerank(
                     q[i],
                     cand_i,
                     xb,
                     k=k,
-                    lambda_=float(request.lambda_),
+                    lambda_=lam,
                     use_max_redundancy=bool(request.use_max_redundancy),
                 )
             else:
@@ -141,7 +175,7 @@ def diversified_search(
                     cand_i,
                     xb,
                     k=k,
-                    lambda_=float(request.lambda_),
+                    lambda_=lam,
                     use_max_redundancy=bool(request.use_max_redundancy),
                 )
         elif method == "threshold":
@@ -185,15 +219,40 @@ def diversified_search(
         out[mask] = sc.astype(np.float32)
         scores[i] = out
 
+    lambda_value = float(request.lambda_)
+    if adaptive_lambdas is not None:
+        lambda_value = float(np.mean(adaptive_lambdas))
+
     meta = {
         "method": request.method,
         "k": k,
         "topN": topN,
-        "lambda": float(request.lambda_),
+        "lambda": lambda_value,
         "tau": float(request.tau),
         "mmr_impl": request.mmr_impl,
         "use_max_redundancy": bool(request.use_max_redundancy),
+        "adaptive_lambda": bool(request.adaptive_lambda),
     }
+
+    if adaptive_cfg is not None and adaptive_lambdas is not None:
+        meta.update(
+            {
+                "adaptive_lambda_strategy": str(adaptive_cfg.strategy),
+                "adaptive_lambda_min": float(adaptive_cfg.lambda_min),
+                "adaptive_lambda_max": float(adaptive_cfg.lambda_max),
+                "adaptive_lambda_mid": float(adaptive_cfg.lambda_mid),
+                "adaptive_lambda_temperature": float(adaptive_cfg.temperature),
+                "adaptive_lambda_entropy_power": float(adaptive_cfg.entropy_power),
+                "adaptive_lambda_topM": (
+                    int(adaptive_cfg.topM) if adaptive_cfg.topM is not None else None
+                ),
+                "adaptive_gap_k": int(adaptive_cfg.gap_k),
+                "adaptive_gap_low": float(adaptive_cfg.gap_t_low),
+                "adaptive_gap_high": float(adaptive_cfg.gap_t_high),
+                "adaptive_lambda_mean": float(np.mean(adaptive_lambdas)),
+                "adaptive_lambda_std": float(np.std(adaptive_lambdas)),
+            }
+        )
 
     return DiversifiedSearchResponse(
         indices=selected,
