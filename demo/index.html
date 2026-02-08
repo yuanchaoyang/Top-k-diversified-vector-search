@@ -15,22 +15,24 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
+            overflow-x: hidden;
         }
         .container {
-            max-width: 1400px;
+            max-width: 100%;
+            width: 100%;
             margin: 0 auto;
         }
         h1 {
             color: white;
             text-align: center;
-            margin-bottom: 8px;
-            font-size: 2.2em;
+            margin-bottom: 6px;
+            font-size: 1.8em;
         }
         .subtitle {
             color: rgba(255,255,255,0.8);
             text-align: center;
-            margin-bottom: 24px;
-            font-size: 1.05em;
+            margin-bottom: 16px;
+            font-size: 1em;
         }
         .search-box {
             background: white;
@@ -86,13 +88,15 @@
         .results-container {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
+            gap: 15px;
         }
         .result-card {
             background: white;
             border-radius: 15px;
-            padding: 20px;
+            padding: 16px;
             box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            min-width: 0;
+            overflow: hidden;
         }
         .result-card h3 {
             color: #333;
@@ -113,22 +117,22 @@
         .metrics {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 15px;
+            gap: 6px;
+            margin-bottom: 12px;
         }
         .metric {
             text-align: center;
-            padding: 10px;
+            padding: 8px 4px;
             background: #f7fafc;
             border-radius: 10px;
         }
         .metric-value {
-            font-size: 24px;
+            font-size: 20px;
             font-weight: bold;
             color: #667eea;
         }
         .metric-label {
-            font-size: 12px;
+            font-size: 11px;
             color: #718096;
         }
         .lambda-bar {
@@ -154,61 +158,69 @@
             list-style: none;
         }
         .result-item {
-            padding: 12px 10px;
-            border-bottom: 1px solid #e2e8f0;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
+            padding: 10px 8px;
+            border-bottom: 1px solid #edf2f7;
         }
         .result-item:last-child {
             border-bottom: none;
         }
-        .result-rank {
-            min-width: 25px;
-            height: 25px;
-            background: #667eea;
-            color: white;
-            border-radius: 50%;
+        .result-header {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            flex-shrink: 0;
-            margin-top: 2px;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 4px;
         }
-        .result-content {
-            flex: 1;
-            min-width: 0;
-        }
-        .result-passage {
-            font-size: 13px;
-            line-height: 1.5;
-            color: #2d3748;
-            max-height: 4.5em;
-            overflow: hidden;
-            display: -webkit-box;
-            -webkit-line-clamp: 3;
-            -webkit-box-orient: vertical;
-        }
-        .result-score {
+        .result-rank {
             color: #718096;
             font-size: 12px;
-            margin-top: 4px;
+            flex-shrink: 0;
+        }
+        .result-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1a0dab;
+            line-height: 1.3;
+            cursor: default;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .result-score-badge {
+            font-size: 11px;
+            color: #718096;
+            background: #f7fafc;
+            padding: 2px 8px;
+            border-radius: 8px;
+            flex-shrink: 0;
             font-weight: 500;
+        }
+        .result-snippet {
+            font-size: 12px;
+            line-height: 1.4;
+            color: #4d5156;
+            margin-left: 24px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            word-break: break-word;
         }
         .intent-info {
             background: #f0f4ff;
-            padding: 15px;
+            padding: 10px 12px;
             border-radius: 10px;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
         .intent-info h4 {
             color: #667eea;
-            margin-bottom: 5px;
+            margin-bottom: 4px;
+            font-size: 13px;
         }
         .intent-info p {
             color: #4a5568;
-            font-size: 14px;
+            font-size: 13px;
         }
         .loading {
             text-align: center;
@@ -216,10 +228,17 @@
             padding: 50px;
             font-size: 18px;
         }
-        @media (max-width: 1100px) {
+        @media (max-width: 1200px) {
+            .results-container {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        @media (max-width: 800px) {
             .results-container {
                 grid-template-columns: 1fr;
             }
+            h1 { font-size: 1.6em; }
+            .examples a { font-size: 12px; padding: 4px 10px; }
         }
     </style>
 </head>
@@ -239,6 +258,7 @@
             <a href="#" onclick="searchExample('how does photosynthesis work')">how does photosynthesis work</a>
             <a href="#" onclick="searchExample('boiling point of water in celsius')">boiling point of water in celsius</a>
             <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
+            <a href="#" onclick="searchExample('apple')">apple</a>
             <a href="#" onclick="searchExample('best ways to improve health')">best ways to improve health</a>
             <a href="#" onclick="searchExample('what year was the eiffel tower built')">what year was the eiffel tower built</a>
         </div>
@@ -269,11 +289,6 @@
             }
         }
 
-        function truncate(text, maxLen) {
-            if (text.length <= maxLen) return text;
-            return text.slice(0, maxLen) + '...';
-        }
-
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
 
@@ -287,7 +302,7 @@
 
             for (const method of methods) {
                 const result = data[method.key];
-                const lambdaPercent = ((result.lambda_value - 0.4) / 0.6) * 100;
+                const lambdaPercent = ((result.lambda_value - 0.2) / 0.8) * 100;
 
                 html += `
                     <div class="result-card">
@@ -331,12 +346,13 @@
 
                         <ul class="result-list">
                             ${result.results.map(r => `
-                                <li class="result-item">
-                                    <span class="result-rank">${r.rank}</span>
-                                    <div class="result-content">
-                                        <div class="result-passage">${truncate(r.passage, 200)}</div>
-                                        <div class="result-score">Score: ${(r.score * 100).toFixed(1)}%</div>
+                                <li class="result-item" title="${r.passage.replace(/"/g, '&quot;')}">
+                                    <div class="result-header">
+                                        <span class="result-rank">${r.rank}.</span>
+                                        <span class="result-title">${r.title}</span>
+                                        <span class="result-score-badge">${(r.score * 100).toFixed(1)}%</span>
                                     </div>
+                                    <div class="result-snippet">${r.snippet}</div>
                                 </li>
                             `).join('')}
                         </ul>

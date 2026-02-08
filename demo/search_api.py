@@ -5,6 +5,7 @@ MS MARCO Passage Search Demo - FastAPI backend
 Searches over 50k MS MARCO passages using intent-adaptive diversified reranking.
 """
 
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -30,7 +31,47 @@ intent_classifier = None
 embedding_model = None
 
 
+def extract_title(passage: str) -> str:
+    """Extract a title from the first sentence of a passage."""
+    # Split on sentence-ending punctuation followed by a space
+    sentences = re.split(r'(?<=[.?!])\s+', passage.strip(), maxsplit=1)
+    title = sentences[0] if sentences else passage
+    # If first sentence is too short, use more text
+    if len(title) < 10:
+        title = passage[:80]
+    # Truncate long titles
+    if len(title) > 80:
+        title = title[:77] + "..."
+    return title
+
+
+def extract_snippet(passage: str, query: str) -> str:
+    """Extract a query-relevant snippet (2-3 best sentences) from the passage."""
+    sentences = re.split(r'(?<=[.?!])\s+', passage.strip())
+    if len(sentences) <= 2:
+        snippet = passage
+    else:
+        # Score each sentence by word overlap with query
+        query_words = set(query.lower().split())
+        scored = []
+        for i, sent in enumerate(sentences):
+            sent_words = set(sent.lower().split())
+            overlap = len(query_words & sent_words)
+            # Small bonus for position (prefer earlier sentences)
+            scored.append((overlap - i * 0.1, i, sent))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # Take top 2-3 sentences, re-order by original position
+        top = sorted(scored[:3], key=lambda x: x[1])
+        snippet = " ".join(t[2] for t in top)
+    # Truncate
+    if len(snippet) > 250:
+        snippet = snippet[:247] + "..."
+    return snippet
+
+
 class SearchResult(BaseModel):
+    title: str
+    snippet: str
     passage: str
     score: float
     rank: int
@@ -101,14 +142,14 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     query_vec = query_vec / (np.linalg.norm(query_vec) + 1e-8)
 
     # Retrieve top-N candidates
-    top_n = 100
+    top_n = 200
     res = retriever.search(query_vec.reshape(1, -1), top_n)
     candidates = res.indices[0]
     scores = res.scores[0]
 
     # Determine lambda based on method
     if method == "intent":
-        lam, intent_score = intent_classifier.predict_lambda(query, 0.5, 0.7)
+        lam, intent_score = intent_classifier.predict_lambda(query, 0.3, 0.9)
     elif method == "fixed_low":
         lam, intent_score = 0.5, 0.5
     elif method == "fixed_high":
@@ -137,8 +178,11 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     # Build results
     results = []
     for rank, idx in enumerate(selected):
+        passage_text = passages[idx]
         results.append(SearchResult(
-            passage=passages[idx],
+            title=extract_title(passage_text),
+            snippet=extract_snippet(passage_text, query),
+            passage=passage_text,
             score=float(sims[rank]),
             rank=rank + 1,
             passage_idx=int(idx),
