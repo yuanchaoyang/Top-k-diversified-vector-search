@@ -27,6 +27,7 @@ app = FastAPI(title="MS MARCO Passage Search Demo")
 retriever = None
 passages = None
 embeddings = None
+passage_sources = None  # list of "wiki"/"msmarco" per passage, or None
 intent_classifier = None
 embedding_model = None
 
@@ -76,6 +77,7 @@ class SearchResult(BaseModel):
     score: float
     rank: int
     passage_idx: int
+    source: str = "web"
 
 
 class SearchResponse(BaseModel):
@@ -90,24 +92,51 @@ class SearchResponse(BaseModel):
 
 
 def load_resources():
-    """Load MS MARCO passages, embeddings, intent model, and sentence transformer."""
-    global retriever, passages, embeddings, intent_classifier, embedding_model
+    """Load passages, embeddings, intent model, and sentence transformer.
+
+    Checks data/mixed/ first (Wikipedia + MS MARCO), falls back to data/msmarco/.
+    """
+    global retriever, passages, embeddings, passage_sources
+    global intent_classifier, embedding_model
 
     print("Loading resources...")
 
-    # Load passages
-    passages_file = Path("data/msmarco/msmarco_passages.txt")
-    embeddings_file = Path("data/msmarco/passage_embeddings.npy")
+    # Check data directories: prefer mixed corpus, fall back to msmarco
+    mixed_dir = Path("data/mixed")
+    msmarco_dir = Path("data/msmarco")
 
-    if not passages_file.exists() or not embeddings_file.exists():
+    if (mixed_dir / "passages.txt").exists() and (mixed_dir / "passage_embeddings.npy").exists():
+        data_dir = mixed_dir
+        passages_file = data_dir / "passages.txt"
+        embeddings_file = data_dir / "passage_embeddings.npy"
+        print(f"  Using mixed corpus from {data_dir}/")
+    elif (msmarco_dir / "msmarco_passages.txt").exists() and (msmarco_dir / "passage_embeddings.npy").exists():
+        data_dir = msmarco_dir
+        passages_file = data_dir / "msmarco_passages.txt"
+        embeddings_file = data_dir / "passage_embeddings.npy"
+        print(f"  Using MS MARCO corpus from {data_dir}/")
+    else:
         raise FileNotFoundError(
-            "MS MARCO data not found. Run: python scripts/prepare_msmarco.py"
+            "No corpus data found. Run one of:\n"
+            "  python scripts/prepare_mixed_corpus.py   (recommended)\n"
+            "  python scripts/prepare_msmarco.py"
         )
 
     with open(passages_file) as f:
         passages = [line.strip() for line in f]
     embeddings = np.load(embeddings_file)
     print(f"  Loaded {len(passages)} passages, dim={embeddings.shape[1]}")
+
+    # Load source labels if available
+    sources_file = data_dir / "passage_sources.txt"
+    if sources_file.exists():
+        with open(sources_file) as f:
+            passage_sources = [line.strip() for line in f]
+        n_wiki = sum(1 for s in passage_sources if s == "wiki")
+        n_msmarco = sum(1 for s in passage_sources if s == "msmarco")
+        print(f"  Sources: {n_wiki} wiki, {n_msmarco} msmarco")
+    else:
+        passage_sources = None
 
     # L2-normalize embeddings
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -117,7 +146,8 @@ def load_resources():
     retriever = build_retriever(embeddings, backend="numpy")
 
     # Load intent classifier (try intent_v2 first, fall back to intent_chatgpt)
-    for model_dir in ["models/intent_v2", "models/intent_chatgpt"]:
+    # for model_dir in ["models/intent_v2", "models/intent_chatgpt"]:
+    for model_dir in ["models/intent_v3", "models/intent_v2", "models/intent_chatgpt"]:
         model_path = Path(model_dir) / "intent_model.pkl"
         if model_path.exists():
             intent_classifier = IntentClassifier.load(model_dir)
@@ -159,9 +189,10 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     else:
         lam, intent_score = 0.65, 0.5
 
-    # MMR rerank
+    # MMR rerank (min_score_ratio prevents selecting irrelevant items for diversity)
     selected = mmr_rerank_incremental(
-        query_vec, candidates, embeddings, k=k, lambda_=float(lam)
+        query_vec, candidates, embeddings, k=k, lambda_=float(lam),
+        min_score_ratio=0.6,
     )
 
     # Compute metrics
@@ -179,6 +210,11 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     results = []
     for rank, idx in enumerate(selected):
         passage_text = passages[idx]
+        # Determine source label
+        if passage_sources is not None and idx < len(passage_sources):
+            src = "wiki" if passage_sources[idx] == "wiki" else "web"
+        else:
+            src = "web"
         results.append(SearchResult(
             title=extract_title(passage_text),
             snippet=extract_snippet(passage_text, query),
@@ -186,6 +222,7 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
             score=float(sims[rank]),
             rank=rank + 1,
             passage_idx=int(idx),
+            source=src,
         ))
 
     return SearchResponse(

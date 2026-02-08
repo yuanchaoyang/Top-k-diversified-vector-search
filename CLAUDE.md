@@ -40,7 +40,6 @@ PYTHONPATH=src python scripts/multi_dataset_experiment.py
 # Intent-based adaptive lambda (requires Ollama)
 ollama serve  # start Ollama server
 ollama pull qwen2.5:0.5b  # download model
-PYTHONPATH=src python scripts/test_ollama_intent.py
 
 # Train intent classifier from ChatGPT labels (requires scikit-learn, sentence-transformers)
 python scripts/train_from_chatgpt.py  # reads data/chatgpt_labels.txt → models/intent_chatgpt/
@@ -53,6 +52,9 @@ python scripts/train_sentence_intent.py       # merges word+sentence labels → 
 PYTHONPATH=src python scripts/evaluate_intent_model.py \
   --words-file data/corpus_words.txt --embeddings-file data/corpus_words_embeddings.npy \
   --out-dir outputs/evaluation
+
+# Build mixed corpus: Wikipedia + MS MARCO (requires datasets, sentence-transformers)
+python scripts/prepare_mixed_corpus.py --n-wiki 30000 --n-msmarco 20000
 
 # MS MARCO real-query evaluation (requires datasets, sentence-transformers)
 python scripts/prepare_msmarco.py --n-passages 50000 --n-queries 1000
@@ -90,6 +92,7 @@ cli_text.py, cli_ann.py, demo/ → search_api.py
 **Demo backends in `demo/`:**
 - `run_demo.py` — Launches FastAPI web demo (word embedding search)
 - `search_api.py` — MS MARCO passage search FastAPI backend with intent-adaptive reranking
+- `index.html` — Web frontend UI (served by both demo backends)
 
 **Evaluation scripts in `scripts/`:**
 - `evaluate_intent_model.py` — Full comparison: intent model vs fixed-λ vs adaptive vs oracle, with statistical tests (Wilcoxon), stratified analysis by intent group, and tradeoff plots
@@ -98,6 +101,7 @@ cli_text.py, cli_ann.py, demo/ → search_api.py
 - `train_with_test.py` — Train intent model with separate train/test split (train: `chatgpt_labels.txt`, test: `chatgpt_test`)
 - `label_sentences_for_intent.py` → `train_sentence_intent.py` — Two-step pipeline: generate ChatGPT labeling prompt from MS MARCO queries, then train combined word+sentence intent model → `models/intent_v2/`
 - `experiment_word_search.py` — Word embedding similarity search experiment
+- `prepare_mixed_corpus.py` — Build mixed Wikipedia + MS MARCO corpus for demos
 
 **Reranking methods:** `baseline` (no rerank), `mmr` (fixed λ), `mmr_adaptive` (per-query λ), `threshold`, `maxmin`
 
@@ -113,7 +117,7 @@ cli_text.py, cli_ann.py, demo/ → search_api.py
 - Datasets use ANN-Benchmarks HDF5 format with `train`, `test`, `neighbors` keys
 - Keep HDF5 datasets in `data/`, outputs in `outputs/`, models in `models/`
 - Intent model training data in `data/chatgpt_labels.txt` (JSON with word→score mappings), sentence labels in `data/chatgpt_sentence_labels.txt`
-- Trained models in `models/intent_chatgpt/` (word-only) and `models/intent_v2/` (word+sentence combined)
+- Trained models in `models/intent/` (basic), `models/intent_chatgpt/` (word-only from ChatGPT labels), and `models/intent_v2/` (word+sentence combined)
 - Some scripts have Chinese (中文) docstrings and comments — this is intentional, maintain the same language when editing those files
 
 ## Dependencies

@@ -117,6 +117,7 @@ def mmr_rerank_incremental(
     k: int,
     lambda_: float,
     use_max_redundancy: bool = True,
+    min_score_ratio: float = 0.0,
 ) -> np.ndarray:
     """MMR rerank with *incremental* redundancy updates.
 
@@ -135,6 +136,10 @@ def mmr_rerank_incremental(
         k: final top-k
         lambda_: tradeoff parameter in [0, 1]
         use_max_redundancy: if True use max similarity to selected set; else mean
+        min_score_ratio: minimum relevance as a fraction of the top candidate's
+            score. Candidates below ``top_score * min_score_ratio`` are excluded
+            before MMR selection so that diversity never pulls in irrelevant
+            items.  0.0 (default) disables the filter.
 
     Returns:
         (k,) selected ids (subset of cand_indices) in selection order.
@@ -146,6 +151,16 @@ def mmr_rerank_incremental(
 
     cand_vecs = np.asarray(xb[cand_indices], dtype=np.float32)
     q = np.asarray(q, dtype=np.float32).reshape(-1)
+
+    # --- relevance floor: drop low-relevance candidates before MMR ---
+    if min_score_ratio > 0.0:
+        sim_all = cand_vecs @ q
+        top_score = float(sim_all.max())
+        keep = sim_all >= top_score * min_score_ratio
+        if keep.sum() >= k:
+            cand_indices = cand_indices[keep]
+            cand_vecs = cand_vecs[keep]
+            N = int(cand_vecs.shape[0])
 
     k_eff = int(min(int(k), N))
     lam = float(lambda_)

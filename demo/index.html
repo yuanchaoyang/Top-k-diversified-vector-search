@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MS MARCO Passage Search - Intent-Adaptive Demo</title>
+    <title>Diversified Passage Search - Multi-Source Demo</title>
     <style>
         * {
             box-sizing: border-box;
@@ -160,6 +160,11 @@
         .result-item {
             padding: 10px 8px;
             border-bottom: 1px solid #edf2f7;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .result-item:hover {
+            background: #f0f4ff;
         }
         .result-item:last-child {
             border-bottom: none;
@@ -180,7 +185,6 @@
             font-weight: 600;
             color: #1a0dab;
             line-height: 1.3;
-            cursor: default;
             flex: 1;
             min-width: 0;
             overflow: hidden;
@@ -207,6 +211,23 @@
             overflow: hidden;
             word-break: break-word;
         }
+        .source-badge {
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+        .source-wiki {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        .source-web {
+            background: #f3f4f6;
+            color: #6b7280;
+        }
         .intent-info {
             background: #f0f4ff;
             padding: 10px 12px;
@@ -221,6 +242,71 @@
         .intent-info p {
             color: #4a5568;
             font-size: 13px;
+        }
+        /* Modal overlay */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .modal {
+            background: white;
+            border-radius: 16px;
+            max-width: 700px;
+            width: 100%;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .modal-header {
+            padding: 18px 20px 12px;
+            border-bottom: 1px solid #edf2f7;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .modal-header h3 {
+            color: #1a0dab;
+            font-size: 16px;
+            line-height: 1.4;
+            flex: 1;
+        }
+        .modal-meta {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: #718096;
+            padding: 0 4px;
+            line-height: 1;
+        }
+        .modal-close:hover {
+            color: #333;
+        }
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            font-size: 15px;
+            line-height: 1.7;
+            color: #2d3748;
+            white-space: pre-wrap;
+            word-break: break-word;
         }
         .loading {
             text-align: center;
@@ -244,8 +330,8 @@
 </head>
 <body>
     <div class="container">
-        <h1>MS MARCO Passage Search</h1>
-        <p class="subtitle">Intent-Adaptive Diversified Retrieval over 50k passages</p>
+        <h1>Diversified Passage Search</h1>
+        <p class="subtitle">Multi-Source Diversified Retrieval</p>
 
         <div class="search-box">
             <input type="text" id="query" placeholder="Enter a search query..." onkeypress="if(event.key==='Enter')search()">
@@ -254,16 +340,32 @@
 
         <div class="examples">
             <span>Try:</span>
-            <a href="#" onclick="searchExample('what is the meaning of life')">what is the meaning of life</a>
-            <a href="#" onclick="searchExample('how does photosynthesis work')">how does photosynthesis work</a>
-            <a href="#" onclick="searchExample('boiling point of water in celsius')">boiling point of water in celsius</a>
-            <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
             <a href="#" onclick="searchExample('apple')">apple</a>
+            <a href="#" onclick="searchExample('mercury')">mercury</a>
+            <a href="#" onclick="searchExample('python')">python</a>
+            <a href="#" onclick="searchExample('jaguar')">jaguar</a>
+            <a href="#" onclick="searchExample('how does photosynthesis work')">how does photosynthesis work</a>
+            <a href="#" onclick="searchExample('what is the meaning of life')">what is the meaning of life</a>
+            <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
             <a href="#" onclick="searchExample('best ways to improve health')">best ways to improve health</a>
-            <a href="#" onclick="searchExample('what year was the eiffel tower built')">what year was the eiffel tower built</a>
         </div>
 
         <div id="results"></div>
+    </div>
+
+    <!-- Full passage modal -->
+    <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title"></h3>
+                <div class="modal-meta">
+                    <span id="modal-source" class="source-badge"></span>
+                    <span id="modal-score" class="result-score-badge"></span>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
     </div>
 
     <script>
@@ -289,7 +391,11 @@
             }
         }
 
+        // Store all results for click-to-expand (avoids inline JSON escaping issues)
+        let _allResults = {};
+
         function displayResults(data) {
+            _allResults = data;
             const resultsDiv = document.getElementById('results');
 
             const methods = [
@@ -345,10 +451,13 @@
                         </div>
 
                         <ul class="result-list">
-                            ${result.results.map(r => `
-                                <li class="result-item" title="${r.passage.replace(/"/g, '&quot;')}">
+                            ${result.results.map((r, i) => `
+                                <li class="result-item" data-method="${method.key}" data-index="${i}">
                                     <div class="result-header">
                                         <span class="result-rank">${r.rank}.</span>
+                                        ${r.source === 'wiki'
+                                            ? '<span class="source-badge source-wiki">Wiki</span>'
+                                            : '<span class="source-badge source-web">Web</span>'}
                                         <span class="result-title">${r.title}</span>
                                         <span class="result-score-badge">${(r.score * 100).toFixed(1)}%</span>
                                     </div>
@@ -363,6 +472,43 @@
             html += '</div>';
             resultsDiv.innerHTML = html;
         }
+
+        // Event delegation: handle clicks on any result item
+        document.addEventListener('click', function(e) {
+            const item = e.target.closest('.result-item');
+            if (!item) return;
+            const methodKey = item.dataset.method;
+            const index = parseInt(item.dataset.index);
+            if (methodKey && _allResults[methodKey]) {
+                openModal(_allResults[methodKey].results[index]);
+            }
+        });
+
+        function openModal(r) {
+            // Extract full first sentence from passage as title (backend truncates to 80 chars)
+            const sentenceMatch = r.passage.match(/^(.*?[.?!])\s/);
+            const fullTitle = sentenceMatch ? sentenceMatch[1] : r.passage.substring(0, 200);
+            document.getElementById('modal-title').textContent = fullTitle;
+            document.getElementById('modal-body').textContent = r.passage;
+            document.getElementById('modal-score').textContent = (r.score * 100).toFixed(1) + '%';
+            const srcEl = document.getElementById('modal-source');
+            if (r.source === 'wiki') {
+                srcEl.textContent = 'Wiki';
+                srcEl.className = 'source-badge source-wiki';
+            } else {
+                srcEl.textContent = 'Web';
+                srcEl.className = 'source-badge source-web';
+            }
+            document.getElementById('modal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeModal();
+        });
     </script>
 </body>
 </html>
