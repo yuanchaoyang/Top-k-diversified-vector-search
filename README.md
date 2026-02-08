@@ -57,3 +57,18 @@ requirements.txt
     --adaptive-gap-low 0.02 --adaptive-gap-high 0.08 --adaptive-gap-lambda-mid 0.8 \
     --out-dir outputs/dayX
   ```
+
+- Interactive demos:
+  ```
+  PYTHONPATH=src python -m diverse_search.cli_text \
+    --methods mmr_adaptive --adaptive-lambda-strategy gap_piecewise
+  PYTHONPATH=src python -m diverse_search.cli_ann \
+    --methods mmr_adaptive --adaptive-lambda-strategy entropy
+  ```
+
+- Optional visualization (lambda histogram):
+  ```
+  python -m diverse_search.run_experiments \
+    --methods baseline mmr mmr_adaptive \
+    --plot-adaptive-lambda
+  ```

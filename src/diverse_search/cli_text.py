@@ -6,6 +6,7 @@ import numpy as np
 
 from sentence_transformers import SentenceTransformer
 
+from .adaptive_lambda import AdaptiveLambdaConfig, adaptive_lambda_from_scores
 from .index import build_retriever
 from .mmr import mmr_rerank_incremental
 from .diversify import threshold_greedy_rerank, maxmin_rerank
@@ -15,7 +16,7 @@ from .cluster import KMeansConfig, kmeans_cluster_labels
 # PYTHONPATH=src python -m diverse_search.cli_text \
 #   --corpus data/corpus_words.txt \
 #   --embeddings data/corpus_words_embeddings.npy \
-#   --k 10 --topN 200 --methods baseline mmr threshold maxmin
+#   --k 10 --topN 200 --methods baseline mmr mmr_adaptive threshold maxmin
 
 
 
@@ -44,14 +45,27 @@ def main() -> None:
     ap.add_argument("--topN", type=int, default=200, help="Candidate pool size before reranking.")
 
     ap.add_argument("--methods", nargs="+",
-                    default=["baseline", "mmr", "threshold", "maxmin"],
-                    help="Any of: baseline, mmr, threshold, maxmin")
+                    default=["baseline", "mmr", "mmr_adaptive", "threshold", "maxmin"],
+                    help="Any of: baseline, mmr, mmr_adaptive, threshold, maxmin")
 
     # IMPORTANT: can't use args.lambda in Python because 'lambda' is a keyword.
     ap.add_argument("--lambda", dest="lambda_", type=float, default=0.6,
                     help="MMR trade-off lambda in [0,1]. (higher -> more relevance)")
     ap.add_argument("--tau", type=float, default=0.8,
                     help="Threshold for greedy diversity filter (higher -> stricter)")
+
+    # Adaptive lambda for MMR (used when methods includes mmr_adaptive)
+    ap.add_argument("--adaptive-lambda-range", default="0.6,0.95",
+                    help="min,max for query-adaptive lambda (comma-separated)")
+    ap.add_argument("--adaptive-lambda-strategy", default="gap_piecewise",
+                    choices=["gap_piecewise", "entropy"])
+    ap.add_argument("--adaptive-gap-k", type=int, default=10)
+    ap.add_argument("--adaptive-gap-low", type=float, default=0.02)
+    ap.add_argument("--adaptive-gap-high", type=float, default=0.08)
+    ap.add_argument("--adaptive-gap-lambda-mid", type=float, default=0.8)
+    ap.add_argument("--adaptive-lambda-temperature", type=float, default=0.08)
+    ap.add_argument("--adaptive-lambda-entropy-power", type=float, default=1.0)
+    ap.add_argument("--adaptive-lambda-topM", type=int, default=50)
 
     # Coverage (pseudo-topics via clustering)
     ap.add_argument("--clusters", type=int, default=50,
@@ -104,6 +118,24 @@ def main() -> None:
     methods = [m.lower() for m in args.methods]
     is_e5 = "e5" in args.model.lower()
 
+    adaptive_cfg = None
+    if "mmr_adaptive" in methods:
+        adaptive_range = [float(x) for x in args.adaptive_lambda_range.split(",") if x.strip() != ""]
+        if len(adaptive_range) != 2:
+            raise ValueError("--adaptive-lambda-range must have two values: min,max")
+        adaptive_cfg = AdaptiveLambdaConfig(
+            lambda_min=float(adaptive_range[0]),
+            lambda_max=float(adaptive_range[1]),
+            lambda_mid=float(args.adaptive_gap_lambda_mid),
+            strategy=str(args.adaptive_lambda_strategy),
+            temperature=float(args.adaptive_lambda_temperature),
+            entropy_power=float(args.adaptive_lambda_entropy_power),
+            topM=int(args.adaptive_lambda_topM) if int(args.adaptive_lambda_topM) > 0 else None,
+            gap_k=int(args.adaptive_gap_k),
+            gap_t_low=float(args.adaptive_gap_low),
+            gap_t_high=float(args.adaptive_gap_high),
+        )
+
     # Build cluster labels once (for coverage)
     labels = None
     if int(args.clusters) > 0:
@@ -153,6 +185,7 @@ def main() -> None:
 
         res = retriever.search(q, topN)
         cand = res.indices[0].astype(np.int64)
+        cand_scores = res.scores[0].astype(np.float32)
 
         if "baseline" in methods:
             show_with_summary("baseline", q, cand[:k].astype(np.int32))
@@ -161,6 +194,15 @@ def main() -> None:
             lam = float(args.lambda_)
             ids = mmr_rerank_incremental(q, cand, xb, k=k, lambda_=lam)
             show_with_summary(f"mmr (lambda={lam})", q, ids)
+
+        if "mmr_adaptive" in methods:
+            if adaptive_cfg is None:
+                raise ValueError("mmr_adaptive requested but adaptive config is missing")
+            lam = adaptive_lambda_from_scores(cand_scores, adaptive_cfg)
+            ids = mmr_rerank_incremental(q, cand, xb, k=k, lambda_=lam)
+            show_with_summary(
+                f"mmr_adaptive (lambda={lam:.3f}, strategy={adaptive_cfg.strategy})", q, ids
+            )
 
         if "threshold" in methods:
             tau = float(args.tau)

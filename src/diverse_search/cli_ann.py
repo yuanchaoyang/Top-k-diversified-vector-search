@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 
+from .adaptive_lambda import AdaptiveLambdaConfig, adaptive_lambda_from_scores
 from .datasets import download_dataset, load_hdf5
 from .index import build_retriever
 from .mmr import mmr_rerank_incremental
@@ -41,9 +42,22 @@ def main() -> None:
     ap.add_argument("--random-query", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
 
-    ap.add_argument("--methods", nargs="+", default=["baseline", "mmr", "threshold", "maxmin"])
+    ap.add_argument("--methods", nargs="+", default=["baseline", "mmr", "mmr_adaptive", "threshold", "maxmin"])
     ap.add_argument("--lambdas", default="0.6")  # comma-separated
     ap.add_argument("--tau", type=float, default=0.8)
+
+    # Adaptive lambda for MMR (used when methods includes mmr_adaptive)
+    ap.add_argument("--adaptive-lambda-range", default="0.6,0.95",
+                    help="min,max for query-adaptive lambda (comma-separated)")
+    ap.add_argument("--adaptive-lambda-strategy", default="gap_piecewise",
+                    choices=["gap_piecewise", "entropy"])
+    ap.add_argument("--adaptive-gap-k", type=int, default=10)
+    ap.add_argument("--adaptive-gap-low", type=float, default=0.02)
+    ap.add_argument("--adaptive-gap-high", type=float, default=0.08)
+    ap.add_argument("--adaptive-gap-lambda-mid", type=float, default=0.8)
+    ap.add_argument("--adaptive-lambda-temperature", type=float, default=0.08)
+    ap.add_argument("--adaptive-lambda-entropy-power", type=float, default=1.0)
+    ap.add_argument("--adaptive-lambda-topM", type=int, default=50)
 
     args = ap.parse_args()
 
@@ -71,12 +85,31 @@ def main() -> None:
     retriever = build_retriever(xb, backend=args.backend, index_type=args.index_type)
     res = retriever.search(q, args.topN)
     cand = res.indices[0].astype(np.int64)
+    cand_scores = res.scores[0].astype(np.float32)
 
     k = int(args.k)
     topN = int(args.topN)
 
     methods = [m.lower() for m in args.methods]
     lambdas = [float(x) for x in args.lambdas.split(",") if x.strip() != ""]
+
+    adaptive_cfg = None
+    if "mmr_adaptive" in methods:
+        adaptive_range = [float(x) for x in args.adaptive_lambda_range.split(",") if x.strip() != ""]
+        if len(adaptive_range) != 2:
+            raise ValueError("--adaptive-lambda-range must have two values: min,max")
+        adaptive_cfg = AdaptiveLambdaConfig(
+            lambda_min=float(adaptive_range[0]),
+            lambda_max=float(adaptive_range[1]),
+            lambda_mid=float(args.adaptive_gap_lambda_mid),
+            strategy=str(args.adaptive_lambda_strategy),
+            temperature=float(args.adaptive_lambda_temperature),
+            entropy_power=float(args.adaptive_lambda_entropy_power),
+            topM=int(args.adaptive_lambda_topM) if int(args.adaptive_lambda_topM) > 0 else None,
+            gap_k=int(args.adaptive_gap_k),
+            gap_t_low=float(args.adaptive_gap_low),
+            gap_t_high=float(args.adaptive_gap_high),
+        )
 
     if "baseline" in methods:
         _print_one("baseline", q, xb, cand[:k].astype(np.int32))
@@ -85,6 +118,13 @@ def main() -> None:
         for lam in lambdas:
             ids = mmr_rerank_incremental(q, cand, xb, k=k, lambda_=lam, use_max_redundancy=True)
             _print_one(f"mmr (lambda={lam})", q, xb, ids)
+
+    if "mmr_adaptive" in methods:
+        if adaptive_cfg is None:
+            raise ValueError("mmr_adaptive requested but adaptive config is missing")
+        lam = adaptive_lambda_from_scores(cand_scores, adaptive_cfg)
+        ids = mmr_rerank_incremental(q, cand, xb, k=k, lambda_=lam, use_max_redundancy=True)
+        _print_one(f"mmr_adaptive (lambda={lam:.3f}, strategy={adaptive_cfg.strategy})", q, xb, ids)
 
     if "threshold" in methods:
         ids = threshold_greedy_rerank(q, cand, xb, k=k, tau=float(args.tau))

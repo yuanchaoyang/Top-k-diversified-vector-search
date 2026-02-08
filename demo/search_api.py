@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""
+MS MARCO Passage Search Demo - FastAPI backend
+
+Searches over 50k MS MARCO passages using intent-adaptive diversified reranking.
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+import numpy as np
+from fastapi import FastAPI, Query
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import List
+
+from diverse_search.index import build_retriever
+from diverse_search.mmr import mmr_rerank_incremental
+from diverse_search.metrics import avg_pairwise_cosine
+from diverse_search.intent_model import IntentClassifier
+
+app = FastAPI(title="MS MARCO Passage Search Demo")
+
+# Global resources
+retriever = None
+passages = None
+embeddings = None
+intent_classifier = None
+embedding_model = None
+
+
+class SearchResult(BaseModel):
+    passage: str
+    score: float
+    rank: int
+    passage_idx: int
+
+
+class SearchResponse(BaseModel):
+    query: str
+    intent_score: float
+    lambda_value: float
+    method: str
+    results: List[SearchResult]
+    relevance: float
+    diversity: float
+    f1: float
+
+
+def load_resources():
+    """Load MS MARCO passages, embeddings, intent model, and sentence transformer."""
+    global retriever, passages, embeddings, intent_classifier, embedding_model
+
+    print("Loading resources...")
+
+    # Load passages
+    passages_file = Path("data/msmarco/msmarco_passages.txt")
+    embeddings_file = Path("data/msmarco/passage_embeddings.npy")
+
+    if not passages_file.exists() or not embeddings_file.exists():
+        raise FileNotFoundError(
+            "MS MARCO data not found. Run: python scripts/prepare_msmarco.py"
+        )
+
+    with open(passages_file) as f:
+        passages = [line.strip() for line in f]
+    embeddings = np.load(embeddings_file)
+    print(f"  Loaded {len(passages)} passages, dim={embeddings.shape[1]}")
+
+    # L2-normalize embeddings
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / (norms + 1e-8)
+
+    # Build retriever (brute force is fast enough for 50k)
+    retriever = build_retriever(embeddings, backend="numpy")
+
+    # Load intent classifier (try intent_v2 first, fall back to intent_chatgpt)
+    for model_dir in ["models/intent_v2", "models/intent_chatgpt"]:
+        model_path = Path(model_dir) / "intent_model.pkl"
+        if model_path.exists():
+            intent_classifier = IntentClassifier.load(model_dir)
+            print(f"  Intent classifier loaded from {model_dir}")
+            break
+    else:
+        intent_classifier = IntentClassifier()
+        print("  No intent model found, using default classifier")
+
+    # Load sentence transformer for query encoding
+    from sentence_transformers import SentenceTransformer
+    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    print("  Embedding model loaded")
+
+    print("Resources loaded!")
+
+
+def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
+    """Execute a search query with the specified method."""
+    # Encode query
+    query_vec = embedding_model.encode([query])[0]
+    query_vec = query_vec / (np.linalg.norm(query_vec) + 1e-8)
+
+    # Retrieve top-N candidates
+    top_n = 100
+    res = retriever.search(query_vec.reshape(1, -1), top_n)
+    candidates = res.indices[0]
+    scores = res.scores[0]
+
+    # Determine lambda based on method
+    if method == "intent":
+        lam, intent_score = intent_classifier.predict_lambda(query, 0.5, 0.7)
+    elif method == "fixed_low":
+        lam, intent_score = 0.5, 0.5
+    elif method == "fixed_high":
+        lam, intent_score = 0.8, 0.5
+    elif method == "baseline":
+        lam, intent_score = 1.0, 0.5
+    else:
+        lam, intent_score = 0.65, 0.5
+
+    # MMR rerank
+    selected = mmr_rerank_incremental(
+        query_vec, candidates, embeddings, k=k, lambda_=float(lam)
+    )
+
+    # Compute metrics
+    selected_vecs = embeddings[selected]
+    sims = np.dot(selected_vecs, query_vec)
+    relevance = float(np.mean(sims))
+    diversity = float(1.0 - avg_pairwise_cosine(selected_vecs))
+    f1 = (
+        2 * relevance * diversity / (relevance + diversity)
+        if (relevance + diversity) > 0
+        else 0
+    )
+
+    # Build results
+    results = []
+    for rank, idx in enumerate(selected):
+        results.append(SearchResult(
+            passage=passages[idx],
+            score=float(sims[rank]),
+            rank=rank + 1,
+            passage_idx=int(idx),
+        ))
+
+    return SearchResponse(
+        query=query,
+        intent_score=float(intent_score),
+        lambda_value=float(lam),
+        method=method,
+        results=results,
+        relevance=relevance,
+        diversity=diversity,
+        f1=f1,
+    )
+
+
+@app.on_event("startup")
+async def startup():
+    load_resources()
+
+
+@app.get("/")
+async def root():
+    return FileResponse("demo/index.html")
+
+
+@app.get("/api/search")
+async def api_search(
+    q: str = Query(..., description="Search query"),
+    k: int = Query(10, description="Number of results"),
+    method: str = Query("intent", description="Method: intent, fixed_low, fixed_high, baseline"),
+):
+    return search(q, k, method)
+
+
+@app.get("/api/compare")
+async def api_compare(
+    q: str = Query(..., description="Search query"),
+    k: int = Query(10, description="Number of results"),
+):
+    """Compare three methods side by side."""
+    return {
+        "intent_adaptive": search(q, k, "intent"),
+        "fixed_low": search(q, k, "fixed_low"),
+        "fixed_high": search(q, k, "fixed_high"),
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

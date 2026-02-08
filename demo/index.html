@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MS MARCO Passage Search - Intent-Adaptive Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 2.2em;
+        }
+        .subtitle {
+            color: rgba(255,255,255,0.8);
+            text-align: center;
+            margin-bottom: 24px;
+            font-size: 1.05em;
+        }
+        .search-box {
+            background: white;
+            border-radius: 50px;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        .search-box input {
+            flex: 1;
+            border: none;
+            font-size: 18px;
+            padding: 10px;
+            outline: none;
+        }
+        .search-box button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .search-box button:hover {
+            transform: scale(1.05);
+        }
+        .examples {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .examples span {
+            color: rgba(255,255,255,0.7);
+            margin-right: 10px;
+        }
+        .examples a {
+            color: white;
+            text-decoration: none;
+            background: rgba(255,255,255,0.2);
+            padding: 5px 15px;
+            border-radius: 15px;
+            margin: 4px;
+            display: inline-block;
+            transition: background 0.2s;
+            font-size: 14px;
+        }
+        .examples a:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .results-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+        .result-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        .result-card h3 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .method-tag {
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 10px;
+            color: white;
+        }
+        .method-intent { background: #667eea; }
+        .method-low { background: #48bb78; }
+        .method-high { background: #ed8936; }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .metric {
+            text-align: center;
+            padding: 10px;
+            background: #f7fafc;
+            border-radius: 10px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #718096;
+        }
+        .lambda-bar {
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            margin: 10px 0;
+            position: relative;
+        }
+        .lambda-fill {
+            height: 100%;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #48bb78, #ed8936);
+            transition: width 0.3s;
+        }
+        .lambda-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #718096;
+        }
+        .result-list {
+            list-style: none;
+        }
+        .result-item {
+            padding: 12px 10px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .result-item:last-child {
+            border-bottom: none;
+        }
+        .result-rank {
+            min-width: 25px;
+            height: 25px;
+            background: #667eea;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .result-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .result-passage {
+            font-size: 13px;
+            line-height: 1.5;
+            color: #2d3748;
+            max-height: 4.5em;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+        }
+        .result-score {
+            color: #718096;
+            font-size: 12px;
+            margin-top: 4px;
+            font-weight: 500;
+        }
+        .intent-info {
+            background: #f0f4ff;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+        .intent-info h4 {
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        .intent-info p {
+            color: #4a5568;
+            font-size: 14px;
+        }
+        .loading {
+            text-align: center;
+            color: white;
+            padding: 50px;
+            font-size: 18px;
+        }
+        @media (max-width: 1100px) {
+            .results-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MS MARCO Passage Search</h1>
+        <p class="subtitle">Intent-Adaptive Diversified Retrieval over 50k passages</p>
+
+        <div class="search-box">
+            <input type="text" id="query" placeholder="Enter a search query..." onkeypress="if(event.key==='Enter')search()">
+            <button onclick="search()">Search</button>
+        </div>
+
+        <div class="examples">
+            <span>Try:</span>
+            <a href="#" onclick="searchExample('what is the meaning of life')">what is the meaning of life</a>
+            <a href="#" onclick="searchExample('how does photosynthesis work')">how does photosynthesis work</a>
+            <a href="#" onclick="searchExample('boiling point of water in celsius')">boiling point of water in celsius</a>
+            <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
+            <a href="#" onclick="searchExample('best ways to improve health')">best ways to improve health</a>
+            <a href="#" onclick="searchExample('what year was the eiffel tower built')">what year was the eiffel tower built</a>
+        </div>
+
+        <div id="results"></div>
+    </div>
+
+    <script>
+        function searchExample(q) {
+            document.getElementById('query').value = q;
+            search();
+            return false;
+        }
+
+        async function search() {
+            const query = document.getElementById('query').value.trim();
+            if (!query) return;
+
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
+
+            try {
+                const response = await fetch(`/api/compare?q=${encodeURIComponent(query)}&k=10`);
+                const data = await response.json();
+                displayResults(data);
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="loading">Error: ${error.message}</div>`;
+            }
+        }
+
+        function truncate(text, maxLen) {
+            if (text.length <= maxLen) return text;
+            return text.slice(0, maxLen) + '...';
+        }
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+
+            const methods = [
+                { key: 'intent_adaptive', name: 'Intent-Adaptive', class: 'method-intent' },
+                { key: 'fixed_low', name: 'Fixed \u03bb=0.5', class: 'method-low' },
+                { key: 'fixed_high', name: 'Fixed \u03bb=0.8', class: 'method-high' }
+            ];
+
+            let html = '<div class="results-container">';
+
+            for (const method of methods) {
+                const result = data[method.key];
+                const lambdaPercent = ((result.lambda_value - 0.4) / 0.6) * 100;
+
+                html += `
+                    <div class="result-card">
+                        <h3>
+                            ${method.name}
+                            <span class="method-tag ${method.class}">\u03bb=${result.lambda_value.toFixed(2)}</span>
+                        </h3>
+
+                        ${method.key === 'intent_adaptive' ? `
+                        <div class="intent-info">
+                            <h4>Intent Analysis</h4>
+                            <p>Query clarity: <strong>${(result.intent_score * 100).toFixed(0)}%</strong></p>
+                            <p>${result.intent_score < 0.3 ? 'Ambiguous query \u2192 more diversity' :
+                               result.intent_score > 0.7 ? 'Specific query \u2192 more relevance' :
+                               'Moderate query \u2192 balanced approach'}</p>
+                        </div>
+                        ` : ''}
+
+                        <div class="lambda-bar">
+                            <div class="lambda-fill" style="width: ${Math.min(100, Math.max(0, lambdaPercent))}%"></div>
+                        </div>
+                        <div class="lambda-info">
+                            <span>\u2190 Diversity</span>
+                            <span>Relevance \u2192</span>
+                        </div>
+
+                        <div class="metrics">
+                            <div class="metric">
+                                <div class="metric-value">${(result.relevance * 100).toFixed(1)}</div>
+                                <div class="metric-label">Relevance</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${(result.diversity * 100).toFixed(1)}</div>
+                                <div class="metric-label">Diversity</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value">${(result.f1 * 100).toFixed(1)}</div>
+                                <div class="metric-label">F1</div>
+                            </div>
+                        </div>
+
+                        <ul class="result-list">
+                            ${result.results.map(r => `
+                                <li class="result-item">
+                                    <span class="result-rank">${r.rank}</span>
+                                    <div class="result-content">
+                                        <div class="result-passage">${truncate(r.passage, 200)}</div>
+                                        <div class="result-score">Score: ${(r.score * 100).toFixed(1)}%</div>
+                                    </div>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>

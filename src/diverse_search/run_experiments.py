@@ -28,7 +28,7 @@ from typing import List, Sequence
 
 import numpy as np
 
-from .adaptive_lambda import AdaptiveLambdaConfig
+from .adaptive_lambda import AdaptiveLambdaConfig, batch_adaptive_lambdas
 from .cluster import KMeansConfig, kmeans_cluster_labels
 from .datasets import DATASET_URLS, download_dataset, load_hdf5
 from .experiment import run_sweep
@@ -90,9 +90,9 @@ def main() -> None:
     p.add_argument(
         "--adaptive-lambda-strategy",
         type=str,
-        default="gap_piecewise",
-        choices=["gap_piecewise", "entropy"],
-        help="gap_piecewise (top1-topK heuristic) or entropy (softmax entropy)",
+        default="hybrid",
+        choices=["gap_piecewise", "gap_linear", "entropy", "hybrid", "candidate_diversity"],
+        help="Strategy: gap_piecewise, gap_linear, entropy, hybrid (recommended), or candidate_diversity",
     )
     p.add_argument(
         "--adaptive-lambda-temperature",
@@ -160,6 +160,11 @@ def main() -> None:
 
     p.add_argument("--out-dir", type=str, default="outputs")
     p.add_argument("--no-plot", action="store_true")
+    p.add_argument(
+        "--plot-adaptive-lambda",
+        action="store_true",
+        help="If set and methods includes mmr_adaptive, save a histogram of per-query lambdas",
+    )
 
     args = p.parse_args()
 
@@ -263,6 +268,24 @@ def main() -> None:
         plt.tight_layout()
         plt.savefig(out_png, dpi=200)
         print(f"Saved: {out_png}")
+
+        if args.plot_adaptive_lambda and "mmr_adaptive" in methods:
+            res = retriever.search(q, int(args.topN))
+            lambdas = batch_adaptive_lambdas(res.scores, adaptive_cfg)
+
+            fig = plt.figure()
+            ax = plt.gca()
+            ax.hist(lambdas, bins=30, color="#2a7f62", alpha=0.85, edgecolor="black", linewidth=0.5)
+            ax.axvline(float(np.mean(lambdas)), color="#333333", linestyle="--", linewidth=1.0, label="mean")
+            ax.set_xlabel("Adaptive lambda")
+            ax.set_ylabel("Query count")
+            ax.set_title("Adaptive Lambda Distribution")
+            ax.legend()
+
+            out_hist = out_dir / "adaptive_lambda_hist.png"
+            plt.tight_layout()
+            plt.savefig(out_hist, dpi=200)
+            print(f"Saved: {out_hist}")
 
 
 if __name__ == "__main__":
