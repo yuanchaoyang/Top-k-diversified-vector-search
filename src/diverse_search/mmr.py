@@ -209,3 +209,116 @@ def mmr_rerank_incremental(
             sum_sim += sims
 
     return cand_indices[np.array(selected, dtype=np.int64)].astype(np.int32)
+
+
+def mmr_rerank_temporal(
+    q: np.ndarray,
+    cand_indices: np.ndarray,
+    xb: np.ndarray,
+    *,
+    k: int,
+    lambda_: float,
+    freshness: Optional[np.ndarray] = None,
+    beta: float = 0.0,
+    use_max_redundancy: bool = True,
+    min_score_ratio: float = 0.0,
+) -> np.ndarray:
+    """MMR rerank with recency-aware scoring.
+
+    score(i) = λ · relevance(i) − (1−λ) · redundancy(i) + β · freshness(i)
+
+    When freshness is None or beta <= 0, delegates to mmr_rerank_incremental
+    (zero overhead for non-temporal queries).
+
+    Args:
+        q: (d,) normalized query
+        cand_indices: (N,) candidate ids into xb
+        xb: (nb, d) normalized database vectors
+        k: final top-k
+        lambda_: tradeoff parameter in [0, 1]
+        freshness: (nb,) array indexed by passage id, values in [0, 1].
+            Each entry is the freshness score for the corresponding vector in xb.
+        beta: weight for the freshness bonus term (0 disables)
+        use_max_redundancy: if True use max similarity to selected set; else mean
+        min_score_ratio: minimum relevance as a fraction of the top candidate's
+            score.  0.0 (default) disables the filter.
+
+    Returns:
+        (k,) selected ids (subset of cand_indices) in selection order.
+    """
+    # Fast path: no temporal reranking needed
+    if freshness is None or beta <= 0.0:
+        return mmr_rerank_incremental(
+            q, cand_indices, xb,
+            k=k, lambda_=lambda_,
+            use_max_redundancy=use_max_redundancy,
+            min_score_ratio=min_score_ratio,
+        )
+
+    cand_indices = np.asarray(cand_indices, dtype=np.int64).reshape(-1)
+    N = int(cand_indices.shape[0])
+    if N == 0 or k <= 0:
+        return cand_indices[:0].astype(np.int32)
+
+    cand_vecs = np.asarray(xb[cand_indices], dtype=np.float32)
+    q = np.asarray(q, dtype=np.float32).reshape(-1)
+
+    # Look up freshness for each candidate
+    cand_freshness = np.asarray(freshness[cand_indices], dtype=np.float32)
+
+    # --- relevance floor ---
+    if min_score_ratio > 0.0:
+        sim_all = cand_vecs @ q
+        top_score = float(sim_all.max())
+        keep = sim_all >= top_score * min_score_ratio
+        if keep.sum() >= k:
+            cand_indices = cand_indices[keep]
+            cand_vecs = cand_vecs[keep]
+            cand_freshness = cand_freshness[keep]
+            N = int(cand_vecs.shape[0])
+
+    k_eff = int(min(int(k), N))
+    lam = float(lambda_)
+    beta_f = float(beta)
+
+    sim_q = cand_vecs @ q  # (N,)
+
+    selected: List[int] = []
+    used = np.zeros(N, dtype=bool)
+
+    # Pick the most relevant item first
+    first_scores = lam * sim_q + beta_f * cand_freshness
+    first = int(np.argmax(first_scores))
+    selected.append(first)
+    used[first] = True
+
+    max_sim = np.zeros(N, dtype=np.float32)
+    sum_sim = np.zeros(N, dtype=np.float32)
+
+    sims = cand_vecs @ cand_vecs[first]
+    if use_max_redundancy:
+        max_sim = sims
+    else:
+        sum_sim = sims
+
+    for t in range(1, k_eff):
+        if use_max_redundancy:
+            redundancy = max_sim
+        else:
+            redundancy = sum_sim / float(t)
+
+        scores = lam * sim_q - (1.0 - lam) * redundancy + beta_f * cand_freshness
+        scores = scores.astype(np.float32, copy=False)
+        scores[used] = -np.inf
+
+        best = int(np.argmax(scores))
+        selected.append(best)
+        used[best] = True
+
+        sims = cand_vecs @ cand_vecs[best]
+        if use_max_redundancy:
+            max_sim = np.maximum(max_sim, sims)
+        else:
+            sum_sim += sims
+
+    return cand_indices[np.array(selected, dtype=np.int64)].astype(np.int32)

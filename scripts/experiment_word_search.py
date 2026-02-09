@@ -89,7 +89,7 @@ def run_word_search_experiment(
     retriever = build_retriever(embeddings, backend="numpy")
 
     # 加载意图分类器 (使用ChatGPT训练的模型)
-    intent_classifier = IntentClassifier.load("models/intent_chatgpt")
+    intent_classifier = IntentClassifier.load("models/intent_v3")
 
     # 方法配置
     methods = {
@@ -180,7 +180,7 @@ def analyze_intent_effect(
     """分析意图对结果的影响"""
 
     retriever = build_retriever(embeddings, backend="numpy")
-    intent_classifier = IntentClassifier.load("models/intent_chatgpt")
+    intent_classifier = IntentClassifier.load("models/intent_v3")
 
     results = []
 

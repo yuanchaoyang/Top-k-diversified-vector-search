@@ -228,6 +228,26 @@
             background: #f3f4f6;
             color: #6b7280;
         }
+        .source-fresh {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        .temporal-info {
+            background: #fff7ed;
+            border-left: 3px solid #f97316;
+            padding: 10px 12px;
+            border-radius: 0 10px 10px 0;
+            margin-bottom: 12px;
+        }
+        .temporal-info h4 {
+            color: #ea580c;
+            margin-bottom: 4px;
+            font-size: 13px;
+        }
+        .temporal-info p {
+            color: #4a5568;
+            font-size: 13px;
+        }
         .intent-info {
             background: #f0f4ff;
             padding: 10px 12px;
@@ -348,6 +368,9 @@
             <a href="#" onclick="searchExample('what is the meaning of life')">what is the meaning of life</a>
             <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
             <a href="#" onclick="searchExample('best ways to improve health')">best ways to improve health</a>
+            <a href="#" onclick="searchExample('latest iPhone price')">latest iPhone price</a>
+            <a href="#" onclick="searchExample('who is the president of the United States')">who is the president of the United States</a>
+            <a href="#" onclick="searchExample('current world population')">current world population</a>
         </div>
 
         <div id="results"></div>
@@ -425,6 +448,13 @@
                                result.intent_score > 0.7 ? 'Specific query \u2192 more relevance' :
                                'Moderate query \u2192 balanced approach'}</p>
                         </div>
+                        ${result.temporal_score > 0.1 ? `
+                        <div class="temporal-info">
+                            <h4>Time-Sensitive Query</h4>
+                            <p>Temporal signal: <strong>${(result.temporal_score * 100).toFixed(0)}%</strong> | Freshness boost \u03b2=${result.beta.toFixed(3)}</p>
+                            <p>${result.temporal_explanation}</p>
+                        </div>
+                        ` : ''}
                         ` : ''}
 
                         <div class="lambda-bar">
@@ -458,6 +488,7 @@
                                         ${r.source === 'wiki'
                                             ? '<span class="source-badge source-wiki">Wiki</span>'
                                             : '<span class="source-badge source-web">Web</span>'}
+                                        ${r.freshness > 0.6 ? '<span class="source-badge source-fresh">Fresh</span>' : ''}
                                         <span class="result-title">${r.title}</span>
                                         <span class="result-score-badge">${(r.score * 100).toFixed(1)}%</span>
                                     </div>

@@ -24,7 +24,7 @@ import numpy as np
 from .adaptive_lambda import AdaptiveLambdaConfig, adaptive_lambda_from_scores
 from .index import BaseRetriever
 from .diversify import maxmin_rerank, threshold_greedy_rerank
-from .mmr import mmr_rerank, mmr_rerank_incremental
+from .mmr import mmr_rerank, mmr_rerank_incremental, mmr_rerank_temporal
 
 
 Method = Literal["baseline", "mmr", "threshold", "maxmin"]
@@ -56,6 +56,10 @@ class DiversifiedSearchRequest:
     adaptive_gap_low: float = 0.02
     adaptive_gap_high: float = 0.08
     tau: float = 0.8  # for threshold greedy
+
+    # temporal / recency-aware reranking
+    temporal_beta: float = 0.0  # weight for freshness bonus (0 disables)
+    freshness: Optional[np.ndarray] = None  # (nb,) freshness scores indexed by passage id
 
     # implementation choices
     mmr_impl: MMRImpl = "incremental"  # incremental is usually faster
@@ -169,6 +173,17 @@ def diversified_search(
                     lambda_=lam,
                     use_max_redundancy=bool(request.use_max_redundancy),
                 )
+            elif request.temporal_beta > 0 and request.freshness is not None:
+                sel = mmr_rerank_temporal(
+                    q[i],
+                    cand_i,
+                    xb,
+                    k=k,
+                    lambda_=lam,
+                    freshness=request.freshness,
+                    beta=float(request.temporal_beta),
+                    use_max_redundancy=bool(request.use_max_redundancy),
+                )
             else:
                 sel = mmr_rerank_incremental(
                     q[i],
@@ -232,6 +247,7 @@ def diversified_search(
         "mmr_impl": request.mmr_impl,
         "use_max_redundancy": bool(request.use_max_redundancy),
         "adaptive_lambda": bool(request.adaptive_lambda),
+        "temporal_beta": float(request.temporal_beta),
     }
 
     if adaptive_cfg is not None and adaptive_lambdas is not None:

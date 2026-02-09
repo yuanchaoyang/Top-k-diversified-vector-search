@@ -17,9 +17,10 @@ from pydantic import BaseModel
 from typing import List
 
 from diverse_search.index import build_retriever
-from diverse_search.mmr import mmr_rerank_incremental
+from diverse_search.mmr import mmr_rerank_temporal
 from diverse_search.metrics import avg_pairwise_cosine
 from diverse_search.intent_model import IntentClassifier
+from diverse_search.temporal import query_aware_lambda_and_beta, TemporalConfig
 
 app = FastAPI(title="MS MARCO Passage Search Demo")
 
@@ -28,6 +29,7 @@ retriever = None
 passages = None
 embeddings = None
 passage_sources = None  # list of "wiki"/"msmarco" per passage, or None
+passage_freshness = None  # (nb,) float32 freshness scores, or None
 intent_classifier = None
 embedding_model = None
 
@@ -78,6 +80,7 @@ class SearchResult(BaseModel):
     rank: int
     passage_idx: int
     source: str = "web"
+    freshness: float = 0.5
 
 
 class SearchResponse(BaseModel):
@@ -89,6 +92,9 @@ class SearchResponse(BaseModel):
     relevance: float
     diversity: float
     f1: float
+    temporal_score: float = 0.0
+    temporal_explanation: str = ""
+    beta: float = 0.0
 
 
 def load_resources():
@@ -96,7 +102,7 @@ def load_resources():
 
     Checks data/mixed/ first (Wikipedia + MS MARCO), falls back to data/msmarco/.
     """
-    global retriever, passages, embeddings, passage_sources
+    global retriever, passages, embeddings, passage_sources, passage_freshness
     global intent_classifier, embedding_model
 
     print("Loading resources...")
@@ -138,6 +144,15 @@ def load_resources():
     else:
         passage_sources = None
 
+    # Load freshness scores if available
+    freshness_file = data_dir / "passage_freshness.npy"
+    if freshness_file.exists():
+        passage_freshness = np.load(freshness_file)
+        print(f"  Freshness scores loaded: shape={passage_freshness.shape}")
+    else:
+        passage_freshness = None
+        print("  No freshness scores found (temporal reranking disabled)")
+
     # L2-normalize embeddings
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     embeddings = embeddings / (norms + 1e-8)
@@ -146,8 +161,7 @@ def load_resources():
     retriever = build_retriever(embeddings, backend="numpy")
 
     # Load intent classifier (try intent_v2 first, fall back to intent_chatgpt)
-    # for model_dir in ["models/intent_v2", "models/intent_chatgpt"]:
-    for model_dir in ["models/intent_v3", "models/intent_v2", "models/intent_chatgpt"]:
+    for model_dir in ["models/intent_v3"]:
         model_path = Path(model_dir) / "intent_model.pkl"
         if model_path.exists():
             intent_classifier = IntentClassifier.load(model_dir)
@@ -178,8 +192,22 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     scores = res.scores[0]
 
     # Determine lambda based on method
+    temporal_score = 0.0
+    temporal_explanation = ""
+    beta = 0.0
+
     if method == "intent":
-        lam, intent_score = intent_classifier.predict_lambda(query, 0.3, 0.9)
+        # Combined intent + temporal analysis
+        ta = query_aware_lambda_and_beta(
+            query, intent_classifier,
+            temporal_config=TemporalConfig(),
+            lambda_min=0.5, lambda_max=0.9,
+        )
+        lam = ta["lambda"]
+        intent_score = ta["intent_score"]
+        temporal_score = ta["temporal_score"]
+        temporal_explanation = ta["temporal_explanation"]
+        beta = ta["beta"]
     elif method == "fixed_low":
         lam, intent_score = 0.5, 0.5
     elif method == "fixed_high":
@@ -189,10 +217,19 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     else:
         lam, intent_score = 0.65, 0.5
 
-    # MMR rerank (min_score_ratio prevents selecting irrelevant items for diversity)
-    selected = mmr_rerank_incremental(
+    # 当候选整体相关度低时, 自动提高λ保住相关性
+    # (语料库对该查询覆盖差时, 多样性只会拉入更多垃圾)
+    top_candidate_score = float(scores[0]) if len(scores) > 0 else 0.0
+    if top_candidate_score < 0.5 and method == "intent":
+        # 候选质量差 → 将λ向0.85靠拢, 越差越靠
+        quality_boost = (0.5 - top_candidate_score) * 1.0  # 最高 +0.5
+        lam = min(0.9, lam + quality_boost)
+
+    # MMR rerank with optional freshness boost
+    selected = mmr_rerank_temporal(
         query_vec, candidates, embeddings, k=k, lambda_=float(lam),
-        min_score_ratio=0.6,
+        freshness=passage_freshness, beta=float(beta),
+        min_score_ratio=0.85,
     )
 
     # Compute metrics
@@ -215,6 +252,8 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
             src = "wiki" if passage_sources[idx] == "wiki" else "web"
         else:
             src = "web"
+        # Freshness for this passage
+        fr = float(passage_freshness[idx]) if passage_freshness is not None else 0.5
         results.append(SearchResult(
             title=extract_title(passage_text),
             snippet=extract_snippet(passage_text, query),
@@ -223,6 +262,7 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
             rank=rank + 1,
             passage_idx=int(idx),
             source=src,
+            freshness=fr,
         ))
 
     return SearchResponse(
@@ -234,6 +274,9 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
         relevance=relevance,
         diversity=diversity,
         f1=f1,
+        temporal_score=float(temporal_score),
+        temporal_explanation=temporal_explanation,
+        beta=float(beta),
     )
 
 

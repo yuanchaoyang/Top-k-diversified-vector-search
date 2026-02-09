@@ -194,7 +194,7 @@ def print_case_studies(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, default=Path("data/msmarco"))
-    parser.add_argument("--model-dir", default="models/intent_chatgpt")
+    parser.add_argument("--model-dir", default="models/intent_v3")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--topN", type=int, default=100)
     parser.add_argument("--max-queries", type=int, default=500)

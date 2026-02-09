@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-构建混合语料库: Wikipedia + FineWeb + MS MARCO (Bing).
+构建混合语料库: Wikipedia + MS MARCO (Bing).
 
-三个来源各有优势:
-  - Wikipedia (wikimedia/wikipedia 20231101.en): 百科知识, 概念覆盖全面
-    单词/实体的多义性覆盖好 (apple 水果、apple 公司都有)
-  - FineWeb (HuggingFaceFW/fineweb 2024): 最新网页数据
-    包含最新产品价格、评测、新闻等
+两个来源各有优势:
+  - FineWiki (HuggingFaceFW/finewiki en): 2025年8月 Wikipedia dump
+    百科知识, 概念覆盖全面, 比 wikimedia/wikipedia 更新两年
   - MS MARCO (Bing 搜索结果): 真实搜索场景的段落
     已有数据, 直接复用 data/msmarco/msmarco_passages.txt
 
-Wikipedia 和 FineWeb 用 streaming 模式, 无需下载全量数据.
+同时生成 passage_freshness.npy: 每条passage的新鲜度分数 (0=旧, 1=新),
+供时间敏感查询的 recency-aware reranking 使用.
+
+Wikipedia 用 streaming 模式, 无需下载全量数据.
 
 依赖:
   pip install datasets sentence-transformers
@@ -18,7 +19,7 @@ Wikipedia 和 FineWeb 用 streaming 模式, 无需下载全量数据.
 用法:
   source .venv/bin/activate
   python scripts/prepare_mixed_corpus.py
-  python scripts/prepare_mixed_corpus.py --n-wiki 25000 --n-web 15000 --n-msmarco 20000
+  python scripts/prepare_mixed_corpus.py --n-wiki 30000 --n-msmarco 20000
 """
 
 from __future__ import annotations
@@ -46,20 +47,21 @@ def _is_good_paragraph(para: str) -> bool:
 
 
 def collect_wiki_paragraphs(n_paragraphs: int, seed: int = 42) -> List[str]:
-    """从完整英文 Wikipedia 收集段落 (streaming 模式).
+    """从 FineWiki (2025年8月 Wikipedia dump) 收集段落 (streaming 模式).
 
-    使用 wikimedia/wikipedia 20231101.en, 包含 600 万+篇文章.
+    FineWiki 是 HuggingFace 维护的高质量 Wikipedia 解析版本,
+    基于 2025年8月的 HTML dump, 比 wikimedia/wikipedia (2023.11) 新两年.
     """
     from datasets import load_dataset
 
-    print(f"[Wiki] 从 English Wikipedia 收集段落 (目标: {n_paragraphs})...")
+    print(f"[Wiki] 从 FineWiki (2025.08) 收集段落 (目标: {n_paragraphs})...")
 
     candidates: List[str] = []
     seen = set()
     n_articles = 0
 
     ds = load_dataset(
-        "wikimedia/wikipedia", "20231101.en",
+        "HuggingFaceFW/finewiki", "en",
         split="train", streaming=True,
         trust_remote_code=True,
     )
@@ -70,8 +72,12 @@ def collect_wiki_paragraphs(n_paragraphs: int, seed: int = 42) -> List[str]:
         if not text:
             continue
 
+        # FineWiki 用 markdown 格式, 按双换行分段, 跳过标题行
         for para in text.split("\n\n"):
             para = para.strip()
+            # 跳过 markdown 标题行
+            if para.startswith("#"):
+                continue
             if not _is_good_paragraph(para):
                 continue
             h = hashlib.md5(para.encode()).hexdigest()
@@ -197,18 +203,14 @@ def encode_texts(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="构建 Wikipedia + FineWeb + MS MARCO 混合语料库"
+        description="构建 Wikipedia + MS MARCO 混合语料库"
     )
     parser.add_argument("--out-dir", type=Path, default=Path("data/mixed"))
     parser.add_argument("--msmarco-dir", type=Path, default=Path("data/msmarco"))
-    parser.add_argument("--n-wiki", type=int, default=25000,
+    parser.add_argument("--n-wiki", type=int, default=30000,
                         help="Wikipedia 段落数量")
-    parser.add_argument("--n-web", type=int, default=15000,
-                        help="FineWeb 网页段落数量")
     parser.add_argument("--n-msmarco", type=int, default=20000,
                         help="MS MARCO (Bing) passage 数量")
-    parser.add_argument("--snapshot", type=str, default="CC-MAIN-2024-51",
-                        help="FineWeb snapshot (默认 2024年12月)")
     parser.add_argument("--model", type=str, default="all-MiniLM-L6-v2")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
@@ -221,32 +223,24 @@ def main():
     print("\n" + "=" * 60)
     wiki_paragraphs = collect_wiki_paragraphs(args.n_wiki, seed=args.seed)
 
-    # Step 2: FineWeb (最新网页)
-    print("\n" + "=" * 60)
-    web_paragraphs = collect_fineweb_paragraphs(
-        args.n_web, snapshot=args.snapshot, seed=args.seed,
-    )
-
-    # Step 3: MS MARCO (Bing 搜索结果)
+    # Step 2: MS MARCO (Bing 搜索结果)
     print("\n" + "=" * 60)
     msmarco_passages = load_msmarco_passages(
         args.msmarco_dir, args.n_msmarco, seed=args.seed,
     )
 
-    # Step 4: 合并
+    # Step 3: 合并
     print("\n" + "=" * 60)
-    all_passages = wiki_paragraphs + web_paragraphs + msmarco_passages
+    all_passages = wiki_paragraphs + msmarco_passages
     sources = (
         ["wiki"] * len(wiki_paragraphs)
-        + ["web"] * len(web_paragraphs)
         + ["msmarco"] * len(msmarco_passages)
     )
     print(f"[合并] 总计 {len(all_passages)} 条")
     print(f"  Wikipedia: {len(wiki_paragraphs)}")
-    print(f"  FineWeb:   {len(web_paragraphs)}")
     print(f"  MS MARCO:  {len(msmarco_passages)}")
 
-    # Step 5: 保存文本
+    # Step 4: 保存文本
     with open(out_dir / "passages.txt", "w") as f:
         for p in all_passages:
             f.write(p.replace("\n", " ") + "\n")
@@ -254,6 +248,14 @@ def main():
         for s in sources:
             f.write(s + "\n")
     print(f"  保存: {out_dir}/passages.txt, passage_sources.txt")
+
+    # Step 5: 生成新鲜度分数
+    from diverse_search.temporal import generate_freshness_scores
+    freshness = generate_freshness_scores(sources)
+    np.save(out_dir / "passage_freshness.npy", freshness)
+    print(f"  保存: {out_dir}/passage_freshness.npy shape={freshness.shape}")
+    print(f"    wiki 新鲜度: {freshness[sources.index('wiki')]:.2f}" if "wiki" in sources else "")
+    print(f"    msmarco 新鲜度: {freshness[sources.index('msmarco')]:.2f}" if "msmarco" in sources else "")
 
     # Step 6: 编码
     print(f"\n[编码] 编码 {len(all_passages)} 条文本...")
@@ -266,7 +268,6 @@ def main():
     print("混合语料库构建完成!")
     print(f"{'=' * 60}")
     print(f"  Wikipedia: {len(wiki_paragraphs)} 条 (百科知识)")
-    print(f"  FineWeb:   {len(web_paragraphs)} 条 (2024网页)")
     print(f"  MS MARCO:  {len(msmarco_passages)} 条 (Bing搜索)")
     print(f"  总计:      {len(all_passages)} 条, dim={embeddings.shape[1]}")
     print(f"  文件位置:  {out_dir}/")

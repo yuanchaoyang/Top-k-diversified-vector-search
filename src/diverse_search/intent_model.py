@@ -6,7 +6,7 @@
 使用方法:
     from diverse_search.intent_model import IntentClassifier
 
-    classifier = IntentClassifier.load("models/intent_chatgpt")
+    classifier = IntentClassifier.load("models/intent_v3")
     score = classifier.predict("apple")  # 返回 ~0.23 (模糊)
     score = classifier.predict("machine learning")  # 返回 ~0.85 (明确)
 """
@@ -122,7 +122,7 @@ class IntentClassifier:
 _default_classifier: Optional[IntentClassifier] = None
 
 
-def get_classifier(model_dir: str = "models/intent_chatgpt") -> IntentClassifier:
+def get_classifier(model_dir: str = "models/intent_v3") -> IntentClassifier:
     """获取或创建分类器实例"""
     global _default_classifier
     if _default_classifier is None:

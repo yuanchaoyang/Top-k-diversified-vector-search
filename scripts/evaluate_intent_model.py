@@ -540,7 +540,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate intent model vs baselines")
     parser.add_argument("--words-file", default="data/corpus_words.txt")
     parser.add_argument("--embeddings-file", default="data/corpus_words_embeddings.npy")
-    parser.add_argument("--model-dir", default="models/intent_chatgpt")
+    parser.add_argument("--model-dir", default="models/intent_v3")
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--topN", type=int, default=50)
     parser.add_argument("--lambda-min", type=float, default=0.4)
