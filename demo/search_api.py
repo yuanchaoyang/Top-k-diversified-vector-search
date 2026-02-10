@@ -100,18 +100,24 @@ class SearchResponse(BaseModel):
 def load_resources():
     """Load passages, embeddings, intent model, and sentence transformer.
 
-    Checks data/mixed/ first (Wikipedia + MS MARCO), falls back to data/msmarco/.
+    Checks data/improved/ first (best quality), then data/mixed/, then data/msmarco/.
     """
     global retriever, passages, embeddings, passage_sources, passage_freshness
     global intent_classifier, embedding_model
 
     print("Loading resources...")
 
-    # Check data directories: prefer mixed corpus, fall back to msmarco
+    # Check data directories: prefer improved corpus, then mixed, then msmarco
+    improved_dir = Path("data/improved")
     mixed_dir = Path("data/mixed")
     msmarco_dir = Path("data/msmarco")
 
-    if (mixed_dir / "passages.txt").exists() and (mixed_dir / "passage_embeddings.npy").exists():
+    if (improved_dir / "passages.txt").exists() and (improved_dir / "passage_embeddings.npy").exists():
+        data_dir = improved_dir
+        passages_file = data_dir / "passages.txt"
+        embeddings_file = data_dir / "passage_embeddings.npy"
+        print(f"  Using improved corpus from {data_dir}/")
+    elif (mixed_dir / "passages.txt").exists() and (mixed_dir / "passage_embeddings.npy").exists():
         data_dir = mixed_dir
         passages_file = data_dir / "passages.txt"
         embeddings_file = data_dir / "passage_embeddings.npy"
@@ -124,11 +130,12 @@ def load_resources():
     else:
         raise FileNotFoundError(
             "No corpus data found. Run one of:\n"
-            "  python scripts/prepare_mixed_corpus.py   (recommended)\n"
+            "  python scripts/build_improved_corpus.py --output data/improved  (recommended)\n"
+            "  python scripts/prepare_mixed_corpus.py\n"
             "  python scripts/prepare_msmarco.py"
         )
 
-    with open(passages_file) as f:
+    with open(passages_file, encoding='utf-8') as f:
         passages = [line.strip() for line in f]
     embeddings = np.load(embeddings_file)
     print(f"  Loaded {len(passages)} passages, dim={embeddings.shape[1]}")
@@ -136,7 +143,7 @@ def load_resources():
     # Load source labels if available
     sources_file = data_dir / "passage_sources.txt"
     if sources_file.exists():
-        with open(sources_file) as f:
+        with open(sources_file, encoding='utf-8') as f:
             passage_sources = [line.strip() for line in f]
         n_wiki = sum(1 for s in passage_sources if s == "wiki")
         n_msmarco = sum(1 for s in passage_sources if s == "msmarco")

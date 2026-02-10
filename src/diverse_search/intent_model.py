@@ -69,7 +69,7 @@ class IntentClassifier:
         labels_path = model_dir / "intent_labels.json"
         label_cache = {}
         if labels_path.exists():
-            with open(labels_path) as f:
+            with open(labels_path, encoding='utf-8') as f:
                 label_cache = json.load(f)
 
         return cls(
