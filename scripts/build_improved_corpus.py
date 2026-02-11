@@ -86,12 +86,14 @@ class CorpusBuilder:
         # A) 高频词列表
         print("加载高频词列表...")
         try:
-            freq_ds = load_dataset("Maximax67/English-Valid-Words", split="train", trust_remote_code=True)
+            freq_ds = load_dataset("Maximax67/English-Valid-Words", "sorted_by_frequency", split="train", trust_remote_code=True)
             # 检查列名
             print(f"  列名: {freq_ds.column_names}")
 
-            # 适配不同的列名
-            if "word" in freq_ds.column_names:
+            # 适配不同的列名（注意大小写）
+            if "Word" in freq_ds.column_names:
+                word_col = "Word"
+            elif "word" in freq_ds.column_names:
                 word_col = "word"
             elif "token" in freq_ds.column_names:
                 word_col = "token"
@@ -164,40 +166,59 @@ class CorpusBuilder:
         return entity_passages
 
     def build_wordnet_definitions(self, common_words: List[str]) -> List[Dict]:
-        """Bucket C: 词典定义 (~8-12k)"""
+        """Bucket C: 词典定义 (~8-12k)
+
+        使用 NLTK WordNet（完整覆盖）。为每个高频词的每个词义生成定义段落,
+        确保多义词（apple, bank, mercury 等）的不同含义都有对应条目。
+        """
         print("\n=== 步骤3: 构建WordNet定义 ===")
         def_passages = []
 
         try:
-            wn = load_dataset("marksverdhei/wordnet-definitions-en-2021", split="train", trust_remote_code=True)
-            print(f"  列名: {wn.column_names}")
+            import nltk
+            nltk.download("wordnet", quiet=True)
+            nltk.download("omw-1.4", quiet=True)
+            from nltk.corpus import wordnet as wn
 
-            # 构建 lemma -> [(definition, example)] 映射
-            lemma2defs = defaultdict(list)
-            for row in wn:
-                # 适配不同的列名
-                lemma = row.get("word") or row.get("lemma") or row.get("term")
-                gloss = row.get("definition") or row.get("gloss")
-                ex = row.get("example") or row.get("examples", "")
+            seen = set()  # 去重
 
-                if lemma and gloss:
-                    lemma2defs[normalize_title(lemma)].append((gloss, ex))
+            # 重要多义词补充列表（确保不被高频词截断遗漏）
+            _IMPORTANT_AMBIGUOUS = [
+                "python", "mercury", "crane", "mouse", "bat", "jaguar",
+                "cardinal", "organ", "trunk", "seal", "bass", "bow",
+                "chip", "coach", "cold", "diamond", "draft", "fair",
+                "film", "horn", "iris", "jam", "jet", "key", "lemon",
+                "march", "mole", "nail", "net", "palm", "park", "patch",
+                "pitch", "plant", "plot", "port", "post", "pupil",
+                "race", "rocket", "root", "sage", "scale", "shower",
+                "sink", "star", "stock", "strike", "tank", "temple",
+                "tie", "toast", "track", "trip", "tube", "valve",
+                "vessel", "volume", "weed", "well",
+            ]
 
-            print(f"  加载了 {len(lemma2defs)} 个词条")
+            # 合并高频词 + 重要多义词（去重，过滤空值）
+            raw = list(common_words[:10000]) + _IMPORTANT_AMBIGUOUS
+            word_set = list(dict.fromkeys(
+                w for w in raw if isinstance(w, str) and w.strip()
+            ))
 
-            # 为高频词生成定义段落
-            for w in tqdm(common_words[:5000], desc="生成定义段落"):
-                key = normalize_title(w)
-                senses = lemma2defs.get(key, [])
+            # 为词表生成定义段落
+            for w in tqdm(word_set, desc="生成定义段落"):
+                synsets = wn.synsets(w)
 
-                # 每个词最多包含2个词义
-                for gloss, ex in senses[:2]:
+                # 每个词最多包含3个词义（保留多义词的多样性）
+                for syn in synsets[:3]:
+                    gloss = syn.definition()
+                    examples = syn.examples()
+                    ex = examples[0] if examples else ""
+
                     base = f"{w}: {gloss}"
                     if ex:
                         base += f" Example: {ex}"
 
-                    txt = clip_chars(base, lo=60, hi=400)
-                    if txt:
+                    txt = clip_chars(base, lo=20, hi=400)
+                    if txt and txt not in seen:
+                        seen.add(txt)
                         def_passages.append({
                             "text": txt,
                             "source": "wordnet",
@@ -244,7 +265,7 @@ class CorpusBuilder:
             print("  加载FineWiki数据集（流式）...")
             finewiki = load_dataset(
                 "HuggingFaceFW/finewiki",
-                "CC-MAIN-2024-10",  # 使用一个具体的配置
+                "en",  # 英语维基百科
                 split="train",
                 streaming=True,
                 trust_remote_code=True

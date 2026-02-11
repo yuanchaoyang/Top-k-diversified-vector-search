@@ -334,6 +334,121 @@
             padding: 50px;
             font-size: 18px;
         }
+        /* IVF comparison panel */
+        .index-compare {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 20px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        .index-compare h3 {
+            color: #333;
+            margin-bottom: 14px;
+            font-size: 16px;
+        }
+        .compare-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .compare-side {
+            background: #f7fafc;
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .compare-side h4 {
+            font-size: 14px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .compare-side .tag-brute {
+            background: #e2e8f0;
+            color: #4a5568;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .compare-side .tag-ivf {
+            background: #c3dafe;
+            color: #3730a3;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .compare-stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 13px;
+            color: #4a5568;
+        }
+        .compare-stat .val {
+            font-weight: 600;
+            color: #2d3748;
+        }
+        .compare-stat .val.better {
+            color: #38a169;
+        }
+        .compare-stat .val.worse {
+            color: #e53e3e;
+        }
+        .compare-summary {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .compare-summary .metric {
+            text-align: center;
+            padding: 10px 6px;
+            background: #f7fafc;
+            border-radius: 10px;
+        }
+        .compare-summary .metric-value {
+            font-size: 22px;
+        }
+        .missed-list {
+            margin-top: 10px;
+        }
+        .missed-list h4 {
+            font-size: 13px;
+            color: #e53e3e;
+            margin-bottom: 6px;
+        }
+        .missed-item {
+            font-size: 12px;
+            color: #4a5568;
+            padding: 4px 0;
+            border-bottom: 1px solid #edf2f7;
+        }
+        .missed-item:last-child {
+            border-bottom: none;
+        }
+        .nprobe-bar {
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            margin: 6px 0;
+            position: relative;
+        }
+        .nprobe-fill {
+            height: 100%;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s;
+        }
+        .nprobe-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #718096;
+        }
         @media (max-width: 1200px) {
             .results-container {
                 grid-template-columns: 1fr 1fr;
@@ -406,9 +521,13 @@
             resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
 
             try {
-                const response = await fetch(`/api/compare?q=${encodeURIComponent(query)}&k=10`);
-                const data = await response.json();
-                displayResults(data);
+                const [compareResp, indexResp] = await Promise.all([
+                    fetch(`/api/compare?q=${encodeURIComponent(query)}&k=10`),
+                    fetch(`/api/compare_index?q=${encodeURIComponent(query)}&k=10&topN=200`),
+                ]);
+                const data = await compareResp.json();
+                const indexData = await indexResp.json();
+                displayResults(data, indexData);
             } catch (error) {
                 resultsDiv.innerHTML = `<div class="loading">Error: ${error.message}</div>`;
             }
@@ -417,7 +536,7 @@
         // Store all results for click-to-expand (avoids inline JSON escaping issues)
         let _allResults = {};
 
-        function displayResults(data) {
+        function displayResults(data, indexData) {
             _allResults = data;
             const resultsDiv = document.getElementById('results');
 
@@ -427,7 +546,14 @@
                 { key: 'fixed_high', name: 'Fixed \u03bb=0.8', class: 'method-high' }
             ];
 
-            let html = '<div class="results-container">';
+            let html = '';
+
+            // IVF vs Brute-force comparison panel
+            if (indexData) {
+                html += renderIndexCompare(indexData);
+            }
+
+            html += '<div class="results-container">';
 
             for (const method of methods) {
                 const result = data[method.key];
@@ -443,10 +569,14 @@
                         ${method.key === 'intent_adaptive' ? `
                         <div class="intent-info">
                             <h4>Intent Analysis</h4>
-                            <p>Query clarity: <strong>${(result.intent_score * 100).toFixed(0)}%</strong></p>
-                            <p>${result.intent_score < 0.3 ? 'Ambiguous query \u2192 more diversity' :
-                               result.intent_score > 0.7 ? 'Specific query \u2192 more relevance' :
-                               'Moderate query \u2192 balanced approach'}</p>
+                            <p>Query clarity: <strong>${(result.intent_score * 100).toFixed(0)}%</strong>
+                               ${result.intent_score < 0.3 ? ' \u2192 Ambiguous query \u2192 more diversity' :
+                                 result.intent_score > 0.7 ? ' \u2192 Specific query \u2192 more relevance' :
+                                 ' \u2192 Moderate query \u2192 balanced approach'}</p>
+                            <p style="margin-top:4px;font-size:12px;color:#667eea">
+                                IVF nprobe=<strong>${result.nprobe || '-'}</strong> / 128 clusters |
+                                topN=<strong>${result.topN || '-'}</strong> candidates
+                            </p>
                         </div>
                         ${result.temporal_score > 0.1 ? `
                         <div class="temporal-info">
@@ -531,6 +661,90 @@
                 srcEl.className = 'source-badge source-web';
             }
             document.getElementById('modal').classList.add('active');
+        }
+
+        function renderIndexCompare(d) {
+            const nprobePct = (d.nprobe / 128 * 100).toFixed(0);
+            const bRel = (d.brute_relevance * 100).toFixed(1);
+            const iRel = (d.ivf_relevance * 100).toFixed(1);
+            const bDiv = (d.brute_diversity * 100).toFixed(1);
+            const iDiv = (d.ivf_diversity * 100).toFixed(1);
+            const bF1 = (d.brute_f1 * 100).toFixed(1);
+            const iF1 = (d.ivf_f1 * 100).toFixed(1);
+
+            function cmp(a, b) {
+                const diff = a - b;
+                if (Math.abs(diff) < 0.05) return '';
+                return diff > 0 ? ' better' : ' worse';
+            }
+
+            let missedHtml = '';
+            if (d.missed_examples && d.missed_examples.length > 0) {
+                missedHtml = `
+                    <div class="missed-list">
+                        <h4>IVF Missed Top Candidates (found by brute-force only)</h4>
+                        ${d.missed_examples.map(m =>
+                            `<div class="missed-item">
+                                #${m.passage_idx} (score ${(m.score * 100).toFixed(1)}%) &mdash; ${m.title}
+                            </div>`
+                        ).join('')}
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="index-compare">
+                    <h3>IVF Index vs Brute-Force Comparison</h3>
+
+                    <div class="compare-summary">
+                        <div class="metric">
+                            <div class="metric-value" style="color: #667eea">${d.nprobe}</div>
+                            <div class="metric-label">nprobe / 128</div>
+                            <div class="nprobe-bar"><div class="nprobe-fill" style="width:${nprobePct}%"></div></div>
+                            <div class="nprobe-info">
+                                <span>intent ${(d.intent_score * 100).toFixed(0)}%</span>
+                                <span>temporal ${(d.temporal_score * 100).toFixed(0)}%</span>
+                            </div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value" style="color: #38a169">${d.candidate_overlap_pct}%</div>
+                            <div class="metric-label">Candidate Overlap</div>
+                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.candidate_overlap} / ${d.topN} shared</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value" style="color: #667eea">${d.rerank_overlap_pct}%</div>
+                            <div class="metric-label">Final Result Overlap</div>
+                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.rerank_overlap} / ${d.k} shared</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value" style="color: #ed8936">${d.speedup}x</div>
+                            <div class="metric-label">Speed-up</div>
+                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.brute_time_ms.toFixed(1)}ms vs ${d.ivf_time_ms.toFixed(1)}ms</div>
+                        </div>
+                    </div>
+
+                    <div class="compare-grid">
+                        <div class="compare-side">
+                            <h4><span class="tag-brute">Brute-Force</span> Exact Search</h4>
+                            <div class="compare-stat"><span>Avg candidate score</span><span class="val">${(d.brute_candidate_avg_score * 100).toFixed(1)}%</span></div>
+                            <div class="compare-stat"><span>Relevance (after MMR)</span><span class="val">${bRel}%</span></div>
+                            <div class="compare-stat"><span>Diversity (after MMR)</span><span class="val">${bDiv}%</span></div>
+                            <div class="compare-stat"><span>F1</span><span class="val">${bF1}%</span></div>
+                        </div>
+                        <div class="compare-side">
+                            <h4><span class="tag-ivf">IVF</span> Adaptive nprobe=${d.nprobe}</h4>
+                            <div class="compare-stat"><span>Avg candidate score</span><span class="val">${(d.ivf_candidate_avg_score * 100).toFixed(1)}%</span></div>
+                            <div class="compare-stat"><span>Relevance (after MMR)</span><span class="val${cmp(d.ivf_relevance, d.brute_relevance)}">${iRel}%</span></div>
+                            <div class="compare-stat"><span>Diversity (after MMR)</span><span class="val${cmp(d.ivf_diversity, d.brute_diversity)}">${iDiv}%</span></div>
+                            <div class="compare-stat"><span>F1</span><span class="val${cmp(d.ivf_f1, d.brute_f1)}">${iF1}%</span></div>
+                            <div class="compare-stat"><span>Unique candidates (IVF only)</span><span class="val">${d.ivf_only_count}</span></div>
+                            <div class="compare-stat"><span>Missed candidates</span><span class="val${d.brute_only_count > 10 ? ' worse' : ''}">${d.brute_only_count}</span></div>
+                        </div>
+                    </div>
+
+                    ${missedHtml}
+                </div>
+            `;
         }
 
         function closeModal() {

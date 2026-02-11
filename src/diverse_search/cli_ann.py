@@ -31,8 +31,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="glove-100-angular")
     ap.add_argument("--data-dir", default="data")
-    ap.add_argument("--backend", default="numpy", choices=["numpy", "faiss"])
-    ap.add_argument("--index-type", default="hnsw", choices=["hnsw", "flat"])
+    ap.add_argument("--backend", default="numpy", choices=["numpy", "numpy_ivf", "faiss"])
+    ap.add_argument("--index-type", default="hnsw", choices=["hnsw", "flat", "ivf"])
+    ap.add_argument("--nlist", type=int, default=128, help="Number of IVF clusters")
+    ap.add_argument("--nprobe", type=int, default=16, help="Number of IVF clusters to probe")
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--topN", type=int, default=200)
     ap.add_argument("--max-train", type=int, default=50000)
@@ -82,7 +84,10 @@ def main() -> None:
     q = Q[qid]
     print(f"Using query_id={qid}, dim={q.shape[0]}, dataset={args.dataset}")
 
-    retriever = build_retriever(xb, backend=args.backend, index_type=args.index_type)
+    retriever = build_retriever(
+        xb, backend=args.backend, index_type=args.index_type,
+        nlist=int(args.nlist), nprobe=int(args.nprobe),
+    )
     res = retriever.search(q, args.topN)
     cand = res.indices[0].astype(np.int64)
     cand_scores = res.scores[0].astype(np.float32)

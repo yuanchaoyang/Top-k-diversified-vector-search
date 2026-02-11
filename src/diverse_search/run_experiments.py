@@ -57,11 +57,13 @@ def main() -> None:
     )
     p.add_argument("--data-dir", type=str, default="data", help="Where to store downloaded datasets")
 
-    p.add_argument("--backend", type=str, default="numpy", choices=["numpy", "faiss"])
-    p.add_argument("--index-type", type=str, default="hnsw", choices=["flat", "hnsw"])
+    p.add_argument("--backend", type=str, default="numpy", choices=["numpy", "numpy_ivf", "faiss"])
+    p.add_argument("--index-type", type=str, default="hnsw", choices=["flat", "hnsw", "ivf"])
     p.add_argument("--hnsw-m", type=int, default=32)
     p.add_argument("--ef-construction", type=int, default=200)
     p.add_argument("--ef-search", type=int, default=64)
+    p.add_argument("--nlist", type=int, default=128, help="Number of IVF clusters (only for ivf index)")
+    p.add_argument("--nprobe", type=int, default=16, help="Number of IVF clusters to probe at search time")
 
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--topN", type=int, default=200)
@@ -188,6 +190,8 @@ def main() -> None:
         hnsw_m=int(args.hnsw_m),
         ef_construction=int(args.ef_construction),
         ef_search=int(args.ef_search),
+        nlist=int(args.nlist),
+        nprobe=int(args.nprobe),
     )
 
     # 3) optional clustering for coverage metrics
