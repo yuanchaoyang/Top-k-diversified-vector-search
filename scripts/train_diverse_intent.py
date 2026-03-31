@@ -187,6 +187,7 @@ def main():
         ("data/chatgpt_labels.txt", "单词标注"),
         ("data/chatgpt_sentence_labels.txt", "句子标注"),
         ("data/chatgpt_diverse_labels.txt", "多样化查询标注"),
+        ("data/chatgpt_targeted_labels.txt", "针对性补充标注 (under-specified commercial + temporal/factual)"),
     ]
     output_dir = Path("models/intent_v3")
 

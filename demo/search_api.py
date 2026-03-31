@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from diverse_search.index import build_retriever, compute_adaptive_nprobe, compute_adaptive_topN
-from diverse_search.mmr import mmr_rerank_temporal
+from diverse_search.hnsw import compute_adaptive_ef
+from diverse_search.mmr import mmr_rerank_temporal, mmr_rerank_incremental
 from diverse_search.metrics import avg_pairwise_cosine
 from diverse_search.intent_model import IntentClassifier
 from diverse_search.temporal import query_aware_lambda_and_beta, TemporalConfig
@@ -26,8 +27,10 @@ from diverse_search.temporal import query_aware_lambda_and_beta, TemporalConfig
 app = FastAPI(title="MS MARCO Passage Search Demo")
 
 # Global resources
-retriever = None
-brute_retriever = None  # 暴力搜索 retriever，用于对比实验
+ivf_retriever = None     # IVF 索引 — 歧义查询用（利用簇结构促多样性）
+hnsw_retriever = None    # HNSW 索引 — 明确查询用（高召回保相关性）
+brute_retriever = None   # 暴力搜索 retriever，用于对比实验
+retriever = None         # 当前激活的 retriever（由 search() 按 intent 动态切换）
 passages = None
 embeddings = None
 passage_sources = None  # list of "wiki"/"msmarco" per passage, or None
@@ -99,6 +102,7 @@ class SearchResponse(BaseModel):
     beta: float = 0.0
     nprobe: int = 0
     topN: int = 0
+    index_type: str = "ivf"   # "ivf" or "hnsw"
 
 
 def load_resources():
@@ -106,7 +110,8 @@ def load_resources():
 
     Checks data/improved/ first (best quality), then data/mixed/, then data/msmarco/.
     """
-    global retriever, brute_retriever, passages, embeddings, passage_sources, passage_freshness
+    global ivf_retriever, hnsw_retriever, brute_retriever, retriever
+    global passages, embeddings, passage_sources, passage_freshness
     global intent_classifier, embedding_model
 
     print("Loading resources...")
@@ -168,14 +173,24 @@ def load_resources():
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     embeddings = embeddings / (norms + 1e-8)
 
-    # Build retrievers — 纯 NumPy IVF (主检索) + brute-force (对比用)
+    # Build retrievers — 三种后端各司其职
     brute_retriever = build_retriever(embeddings, backend="numpy")
     print("  Brute-force retriever built (for comparison)")
-    retriever = build_retriever(
+
+    ivf_retriever = build_retriever(
         embeddings, backend="numpy_ivf",
         nlist=128, nprobe=16,
     )
     print(f"  NumPy IVF index built: nlist=128, default nprobe=16")
+
+    hnsw_retriever = build_retriever(
+        embeddings, backend="numpy_hnsw",
+        hnsw_m=16, ef_construction=200, ef_search=64,
+    )
+    print(f"  NumPy HNSW index built: M=16, ef_construction=200")
+
+    # 默认 retriever 指向 IVF（search() 中会按 intent 动态切换）
+    retriever = ivf_retriever
 
     # Load intent classifier (try intent_v2 first, fall back to intent_chatgpt)
     for model_dir in ["models/intent_v3"]:
@@ -202,18 +217,77 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     query_vec = embedding_model.encode([query])[0]
     query_vec = query_vec / (np.linalg.norm(query_vec) + 1e-8)
 
-    # 1) 先计算 intent 信号（用于自适应 nprobe 和 lambda）
+    # ── baseline: brute force top-k，无重排（与 case study 一致）──
+    if method == "baseline":
+        res = brute_retriever.search(query_vec.reshape(1, -1), 200)
+        selected = res.indices[0][:k]
+        selected_vecs = embeddings[selected]
+        sims = np.dot(selected_vecs, query_vec)
+        relevance = float(np.mean(sims))
+        diversity = float(1.0 - avg_pairwise_cosine(selected_vecs))
+        f1 = 2 * relevance * diversity / (relevance + diversity) if (relevance + diversity) > 0 else 0.0
+        results = []
+        for rank, idx in enumerate(selected):
+            src = "wiki" if passage_sources is not None and idx < len(passage_sources) and passage_sources[idx] == "wiki" else "web"
+            fr = float(passage_freshness[idx]) if passage_freshness is not None else 0.5
+            results.append(SearchResult(
+                title=extract_title(passages[idx]),
+                snippet=extract_snippet(passages[idx], query),
+                passage=passages[idx],
+                score=float(sims[rank]),
+                rank=rank + 1,
+                passage_idx=int(idx),
+                source=src,
+                freshness=fr,
+            ))
+        return SearchResponse(
+            query=query, intent_score=0.5, lambda_value=1.0, method=method,
+            results=results, relevance=relevance, diversity=diversity, f1=f1,
+            index_type="brute",
+        )
+
+    # ── fixed_mmr: brute force + MMR λ=0.7（与 case study 一致）──
+    if method == "fixed_mmr":
+        res = brute_retriever.search(query_vec.reshape(1, -1), 200)
+        selected = mmr_rerank_incremental(query_vec, res.indices[0], embeddings, k=k, lambda_=0.7)
+        selected_vecs = embeddings[selected]
+        sims = np.dot(selected_vecs, query_vec)
+        relevance = float(np.mean(sims))
+        diversity = float(1.0 - avg_pairwise_cosine(selected_vecs))
+        f1 = 2 * relevance * diversity / (relevance + diversity) if (relevance + diversity) > 0 else 0.0
+        results = []
+        for rank, idx in enumerate(selected):
+            src = "wiki" if passage_sources is not None and idx < len(passage_sources) and passage_sources[idx] == "wiki" else "web"
+            fr = float(passage_freshness[idx]) if passage_freshness is not None else 0.5
+            results.append(SearchResult(
+                title=extract_title(passages[idx]),
+                snippet=extract_snippet(passages[idx], query),
+                passage=passages[idx],
+                score=float(sims[rank]),
+                rank=rank + 1,
+                passage_idx=int(idx),
+                source=src,
+                freshness=fr,
+            ))
+        return SearchResponse(
+            query=query, intent_score=0.5, lambda_value=0.7, method=method,
+            results=results, relevance=relevance, diversity=diversity, f1=f1,
+            index_type="brute",
+        )
+
+    # 1) 先计算 intent 信号（用于自适应参数 + 索引选择）
     temporal_score = 0.0
     temporal_explanation = ""
     beta = 0.0
     current_nprobe = 0
+    active_index = "ivf"   # 当前使用的索引类型（用于日志/返回）
 
     if method == "intent":
         # Combined intent + temporal analysis
         ta = query_aware_lambda_and_beta(
             query, intent_classifier,
             temporal_config=TemporalConfig(),
-            lambda_min=0.40, lambda_max=0.9,
+            lambda_min=0.30, lambda_max=0.9,
         )
         lam = ta["lambda"]
         intent_score = ta["intent_score"]
@@ -221,11 +295,24 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
         temporal_explanation = ta["temporal_explanation"]
         beta = ta["beta"]
 
-        # 2) 设置自适应 nprobe 和 topN
-        if hasattr(retriever, "set_nprobe"):
-            current_nprobe = compute_adaptive_nprobe(intent_score, temporal_score)
-            retriever.set_nprobe(current_nprobe)
+        # 2) 意图驱动索引选择 + 自适应参数
+        #    歧义查询 → IVF（利用簇结构 + cluster_balanced 促多样性）
+        #    明确查询 → HNSW（高召回、低延迟，聚焦相关性）
         top_n = compute_adaptive_topN(intent_score, temporal_score)
+
+        if intent_score < 0.4:
+            # 歧义查询 → IVF
+            active_index = "ivf"
+            current_nprobe = compute_adaptive_nprobe(intent_score, temporal_score)
+            ivf_retriever.set_nprobe(current_nprobe)
+        else:
+            # 明确查询 → HNSW
+            active_index = "hnsw"
+            ef = compute_adaptive_ef(intent_score, temporal_score)
+            hnsw_retriever.set_ef_search(ef)
+    elif method == "fixed_mmr":
+        lam, intent_score = 0.7, 0.5
+        top_n = 200
     elif method == "fixed_low":
         lam, intent_score = 0.5, 0.5
         top_n = 200
@@ -239,12 +326,19 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
         lam, intent_score = 0.65, 0.5
         top_n = 200
 
-    # 读取实际 nprobe（非 intent 方法或非 IVF 时为 0）
-    if current_nprobe == 0 and hasattr(retriever, "get_nprobe"):
-        current_nprobe = retriever.get_nprobe() or 0
-
     # 3) 检索 top-N 候选
-    res = retriever.search(query_vec.reshape(1, -1), top_n)
+    use_balanced = method == "intent" and intent_score < 0.4
+
+    if active_index == "hnsw":
+        # HNSW 检索（无 cluster_balanced 参数）
+        res = hnsw_retriever.search(query_vec.reshape(1, -1), top_n)
+        current_nprobe = 0  # HNSW 无 nprobe 概念
+    else:
+        # IVF 检索（歧义查询启用簇级均匀采样）
+        res = ivf_retriever.search(query_vec.reshape(1, -1), top_n, cluster_balanced=use_balanced)
+        if current_nprobe == 0:
+            current_nprobe = ivf_retriever.get_nprobe() or 0
+
     candidates = res.indices[0]
     scores = res.scores[0]
 
@@ -259,11 +353,17 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
     # 歧义查询放宽相关度门槛，保留多样候选；明确查询收紧门槛，过滤噪声
     min_ratio = 0.60 + 0.25 * intent_score  # 0.60 ~ 0.85
 
-    # 4) MMR rerank with optional freshness boost
+    # 4) MMR rerank with optional freshness boost + cluster-aware penalty
+    # 歧义查询（IVF）启用簇感知惩罚，避免同一语义簇垄断结果
+    # 明确查询（HNSW）不使用簇惩罚，聚焦相关性
+    cluster_ids = getattr(ivf_retriever, "assignments", None) if use_balanced else None
+    gamma = 0.15 if use_balanced else 0.0
+
     selected = mmr_rerank_temporal(
         query_vec, candidates, embeddings, k=k, lambda_=float(lam),
         freshness=passage_freshness, beta=float(beta),
         min_score_ratio=min_ratio,
+        cluster_ids=cluster_ids, cluster_penalty=gamma,
     )
 
     # Compute metrics
@@ -313,6 +413,7 @@ def search(query: str, k: int = 10, method: str = "intent") -> SearchResponse:
         beta=float(beta),
         nprobe=current_nprobe,
         topN=top_n,
+        index_type=active_index,
     )
 
 
@@ -340,11 +441,11 @@ async def api_compare(
     q: str = Query(..., description="Search query"),
     k: int = Query(10, description="Number of results"),
 ):
-    """Compare three methods side by side."""
+    """Compare three methods side by side: baseline, fixed MMR, full pipeline."""
     return {
-        "intent_adaptive": search(q, k, "intent"),
-        "fixed_low": search(q, k, "fixed_low"),
-        "fixed_high": search(q, k, "fixed_high"),
+        "baseline": search(q, k, "baseline"),
+        "fixed_mmr": search(q, k, "fixed_mmr"),
+        "full_pipeline": search(q, k, "intent"),
     }
 
 

@@ -475,17 +475,15 @@
 
         <div class="examples">
             <span>Try:</span>
-            <a href="#" onclick="searchExample('apple')">apple</a>
+            <a href="#" onclick="searchExample('spring')">spring</a>
             <a href="#" onclick="searchExample('mercury')">mercury</a>
+            <a href="#" onclick="searchExample('apple')">apple</a>
             <a href="#" onclick="searchExample('python')">python</a>
             <a href="#" onclick="searchExample('jaguar')">jaguar</a>
+            <a href="#" onclick="searchExample('Fall of Berlin \u2013 1945')">Fall of Berlin – 1945</a>
+            <a href="#" onclick="searchExample('National Football League (Ireland)')">National Football League (Ireland)</a>
             <a href="#" onclick="searchExample('how does photosynthesis work')">how does photosynthesis work</a>
-            <a href="#" onclick="searchExample('what is the meaning of life')">what is the meaning of life</a>
             <a href="#" onclick="searchExample('who wrote romeo and juliet')">who wrote romeo and juliet</a>
-            <a href="#" onclick="searchExample('best ways to improve health')">best ways to improve health</a>
-            <a href="#" onclick="searchExample('latest iPhone price')">latest iPhone price</a>
-            <a href="#" onclick="searchExample('who is the president of the United States')">who is the president of the United States</a>
-            <a href="#" onclick="searchExample('current world population')">current world population</a>
         </div>
 
         <div id="results"></div>
@@ -521,13 +519,9 @@
             resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
 
             try {
-                const [compareResp, indexResp] = await Promise.all([
-                    fetch(`/api/compare?q=${encodeURIComponent(query)}&k=10`),
-                    fetch(`/api/compare_index?q=${encodeURIComponent(query)}&k=10&topN=200`),
-                ]);
-                const data = await compareResp.json();
-                const indexData = await indexResp.json();
-                displayResults(data, indexData);
+                const resp = await fetch(`/api/compare?q=${encodeURIComponent(query)}&k=10`);
+                const data = await resp.json();
+                displayResults(data);
             } catch (error) {
                 resultsDiv.innerHTML = `<div class="loading">Error: ${error.message}</div>`;
             }
@@ -536,24 +530,17 @@
         // Store all results for click-to-expand (avoids inline JSON escaping issues)
         let _allResults = {};
 
-        function displayResults(data, indexData) {
+        function displayResults(data) {
             _allResults = data;
             const resultsDiv = document.getElementById('results');
 
             const methods = [
-                { key: 'intent_adaptive', name: 'Intent-Adaptive', class: 'method-intent' },
-                { key: 'fixed_low', name: 'Fixed \u03bb=0.5', class: 'method-low' },
-                { key: 'fixed_high', name: 'Fixed \u03bb=0.8', class: 'method-high' }
+                { key: 'baseline', name: 'Baseline (No Rerank)', class: 'method-high' },
+                { key: 'fixed_mmr', name: 'Fixed MMR \u03bb=0.7', class: 'method-low' },
+                { key: 'full_pipeline', name: 'Full Pipeline', class: 'method-intent' }
             ];
 
-            let html = '';
-
-            // IVF vs Brute-force comparison panel
-            if (indexData) {
-                html += renderIndexCompare(indexData);
-            }
-
-            html += '<div class="results-container">';
+            let html = '<div class="results-container">';
 
             for (const method of methods) {
                 const result = data[method.key];
@@ -566,7 +553,7 @@
                             <span class="method-tag ${method.class}">\u03bb=${result.lambda_value.toFixed(2)}</span>
                         </h3>
 
-                        ${method.key === 'intent_adaptive' ? `
+                        ${method.key === 'full_pipeline' ? `
                         <div class="intent-info">
                             <h4>Intent Analysis</h4>
                             <p>Query clarity: <strong>${(result.intent_score * 100).toFixed(0)}%</strong>
@@ -574,8 +561,9 @@
                                  result.intent_score > 0.7 ? ' \u2192 Specific query \u2192 more relevance' :
                                  ' \u2192 Moderate query \u2192 balanced approach'}</p>
                             <p style="margin-top:4px;font-size:12px;color:#667eea">
-                                IVF nprobe=<strong>${result.nprobe || '-'}</strong> / 128 clusters |
-                                topN=<strong>${result.topN || '-'}</strong> candidates
+                                Backend: <strong>${result.index_type.toUpperCase()}</strong> |
+                                \u03bb=<strong>${result.lambda_value.toFixed(2)}</strong> |
+                                topN=<strong>${result.topN || '-'}</strong>
                             </p>
                         </div>
                         ${result.temporal_score > 0.1 ? `
@@ -661,90 +649,6 @@
                 srcEl.className = 'source-badge source-web';
             }
             document.getElementById('modal').classList.add('active');
-        }
-
-        function renderIndexCompare(d) {
-            const nprobePct = (d.nprobe / 128 * 100).toFixed(0);
-            const bRel = (d.brute_relevance * 100).toFixed(1);
-            const iRel = (d.ivf_relevance * 100).toFixed(1);
-            const bDiv = (d.brute_diversity * 100).toFixed(1);
-            const iDiv = (d.ivf_diversity * 100).toFixed(1);
-            const bF1 = (d.brute_f1 * 100).toFixed(1);
-            const iF1 = (d.ivf_f1 * 100).toFixed(1);
-
-            function cmp(a, b) {
-                const diff = a - b;
-                if (Math.abs(diff) < 0.05) return '';
-                return diff > 0 ? ' better' : ' worse';
-            }
-
-            let missedHtml = '';
-            if (d.missed_examples && d.missed_examples.length > 0) {
-                missedHtml = `
-                    <div class="missed-list">
-                        <h4>IVF Missed Top Candidates (found by brute-force only)</h4>
-                        ${d.missed_examples.map(m =>
-                            `<div class="missed-item">
-                                #${m.passage_idx} (score ${(m.score * 100).toFixed(1)}%) &mdash; ${m.title}
-                            </div>`
-                        ).join('')}
-                    </div>
-                `;
-            }
-
-            return `
-                <div class="index-compare">
-                    <h3>IVF Index vs Brute-Force Comparison</h3>
-
-                    <div class="compare-summary">
-                        <div class="metric">
-                            <div class="metric-value" style="color: #667eea">${d.nprobe}</div>
-                            <div class="metric-label">nprobe / 128</div>
-                            <div class="nprobe-bar"><div class="nprobe-fill" style="width:${nprobePct}%"></div></div>
-                            <div class="nprobe-info">
-                                <span>intent ${(d.intent_score * 100).toFixed(0)}%</span>
-                                <span>temporal ${(d.temporal_score * 100).toFixed(0)}%</span>
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value" style="color: #38a169">${d.candidate_overlap_pct}%</div>
-                            <div class="metric-label">Candidate Overlap</div>
-                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.candidate_overlap} / ${d.topN} shared</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value" style="color: #667eea">${d.rerank_overlap_pct}%</div>
-                            <div class="metric-label">Final Result Overlap</div>
-                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.rerank_overlap} / ${d.k} shared</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-value" style="color: #ed8936">${d.speedup}x</div>
-                            <div class="metric-label">Speed-up</div>
-                            <div style="font-size:11px;color:#718096;margin-top:4px">${d.brute_time_ms.toFixed(1)}ms vs ${d.ivf_time_ms.toFixed(1)}ms</div>
-                        </div>
-                    </div>
-
-                    <div class="compare-grid">
-                        <div class="compare-side">
-                            <h4><span class="tag-brute">Brute-Force</span> Exact Search</h4>
-                            <div class="compare-stat"><span>Avg candidate score</span><span class="val">${(d.brute_candidate_avg_score * 100).toFixed(1)}%</span></div>
-                            <div class="compare-stat"><span>Relevance (after MMR)</span><span class="val">${bRel}%</span></div>
-                            <div class="compare-stat"><span>Diversity (after MMR)</span><span class="val">${bDiv}%</span></div>
-                            <div class="compare-stat"><span>F1</span><span class="val">${bF1}%</span></div>
-                        </div>
-                        <div class="compare-side">
-                            <h4><span class="tag-ivf">IVF</span> Adaptive nprobe=${d.nprobe}</h4>
-                            <div class="compare-stat"><span>Avg candidate score</span><span class="val">${(d.ivf_candidate_avg_score * 100).toFixed(1)}%</span></div>
-                            <div class="compare-stat"><span>Relevance (after MMR)</span><span class="val${cmp(d.ivf_relevance, d.brute_relevance)}">${iRel}%</span></div>
-                            <div class="compare-stat"><span>Diversity (after MMR)</span><span class="val${cmp(d.ivf_diversity, d.brute_diversity)}">${iDiv}%</span></div>
-                            <div class="compare-stat"><span>F1</span><span class="val${cmp(d.ivf_f1, d.brute_f1)}">${iF1}%</span></div>
-                            <div class="compare-stat"><span>Unique candidates (IVF only)</span><span class="val">${d.ivf_only_count}</span></div>
-                            <div class="compare-stat"><span>Missed candidates</span><span class="val${d.brute_only_count > 10 ? ' worse' : ''}">${d.brute_only_count}</span></div>
-                        </div>
-                    </div>
-
-                    ${missedHtml}
-                </div>
-            `;
         }
 
         function closeModal() {

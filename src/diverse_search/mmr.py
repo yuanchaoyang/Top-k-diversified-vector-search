@@ -118,6 +118,8 @@ def mmr_rerank_incremental(
     lambda_: float,
     use_max_redundancy: bool = True,
     min_score_ratio: float = 0.0,
+    cluster_ids: Optional[np.ndarray] = None,
+    cluster_penalty: float = 0.0,
 ) -> np.ndarray:
     """MMR rerank with *incremental* redundancy updates.
 
@@ -140,6 +142,12 @@ def mmr_rerank_incremental(
             score. Candidates below ``top_score * min_score_ratio`` are excluded
             before MMR selection so that diversity never pulls in irrelevant
             items.  0.0 (default) disables the filter.
+        cluster_ids: (nb,) cluster assignment for each vector in xb.
+            When provided with cluster_penalty > 0, candidates from a cluster
+            that already has a representative in the selected set receive an
+            extra penalty, encouraging inter-cluster diversity.
+        cluster_penalty: weight γ of the cluster penalty term (0 disables).
+            score -= γ · (n_same_cluster / |S|)
 
     Returns:
         (k,) selected ids (subset of cand_indices) in selection order.
@@ -152,6 +160,12 @@ def mmr_rerank_incremental(
     cand_vecs = np.asarray(xb[cand_indices], dtype=np.float32)
     q = np.asarray(q, dtype=np.float32).reshape(-1)
 
+    # --- 簇感知惩罚：查找每个候选的簇编号 ---
+    use_cluster = cluster_ids is not None and cluster_penalty > 0.0
+    if use_cluster:
+        cand_clusters = np.asarray(cluster_ids[cand_indices], dtype=np.int32)
+        gamma = float(cluster_penalty)
+
     # --- relevance floor: drop low-relevance candidates before MMR ---
     if min_score_ratio > 0.0:
         sim_all = cand_vecs @ q
@@ -160,6 +174,8 @@ def mmr_rerank_incremental(
         if keep.sum() >= k:
             cand_indices = cand_indices[keep]
             cand_vecs = cand_vecs[keep]
+            if use_cluster:
+                cand_clusters = cand_clusters[keep]
             N = int(cand_vecs.shape[0])
 
     k_eff = int(min(int(k), N))
@@ -171,10 +187,17 @@ def mmr_rerank_incremental(
     selected: List[int] = []
     used = np.zeros(N, dtype=bool)
 
+    # 簇计数：已选集合中每个簇有多少代表
+    if use_cluster:
+        selected_cluster_count: dict[int, int] = {}
+
     # pick the most relevant item first (standard in diversified retrieval)
     first = int(np.argmax(sim_q))
     selected.append(first)
     used[first] = True
+    if use_cluster:
+        c = int(cand_clusters[first])
+        selected_cluster_count[c] = selected_cluster_count.get(c, 0) + 1
 
     # redundancy trackers for all candidates
     # - max redundancy: keep max similarity to any selected
@@ -195,12 +218,25 @@ def mmr_rerank_incremental(
             redundancy = sum_sim / float(t)
 
         scores = lam * sim_q - (1.0 - lam) * redundancy
+
+        # 簇感知惩罚：已选集合中同簇代表越多，惩罚越重
+        if use_cluster:
+            cluster_pen = np.array(
+                [selected_cluster_count.get(int(cand_clusters[i]), 0)
+                 for i in range(N)],
+                dtype=np.float32,
+            ) / float(t)  # 归一化到 [0, 1]
+            scores -= gamma * cluster_pen
+
         scores = scores.astype(np.float32, copy=False)
         scores[used] = -np.inf
 
         best = int(np.argmax(scores))
         selected.append(best)
         used[best] = True
+        if use_cluster:
+            c = int(cand_clusters[best])
+            selected_cluster_count[c] = selected_cluster_count.get(c, 0) + 1
 
         sims = cand_vecs @ cand_vecs[best]
         if use_max_redundancy:
@@ -222,10 +258,16 @@ def mmr_rerank_temporal(
     beta: float = 0.0,
     use_max_redundancy: bool = True,
     min_score_ratio: float = 0.0,
+    cluster_ids: Optional[np.ndarray] = None,
+    cluster_penalty: float = 0.0,
 ) -> np.ndarray:
-    """MMR rerank with recency-aware scoring.
+    """MMR rerank with recency-aware scoring and optional cluster-aware penalty.
 
-    score(i) = λ · relevance(i) − (1−λ) · redundancy(i) + β · freshness(i)
+    score(i) = λ · relevance(i) − (1−λ) · redundancy(i)
+             + β · freshness(i)
+             − γ · cluster_redundancy(i)
+
+    cluster_redundancy(i) = (已选集合中与 i 同簇的数量) / |已选集合|
 
     When freshness is None or beta <= 0, delegates to mmr_rerank_incremental
     (zero overhead for non-temporal queries).
@@ -242,6 +284,8 @@ def mmr_rerank_temporal(
         use_max_redundancy: if True use max similarity to selected set; else mean
         min_score_ratio: minimum relevance as a fraction of the top candidate's
             score.  0.0 (default) disables the filter.
+        cluster_ids: (nb,) cluster assignment for each vector in xb.
+        cluster_penalty: weight γ of the cluster penalty term (0 disables).
 
     Returns:
         (k,) selected ids (subset of cand_indices) in selection order.
@@ -253,6 +297,8 @@ def mmr_rerank_temporal(
             k=k, lambda_=lambda_,
             use_max_redundancy=use_max_redundancy,
             min_score_ratio=min_score_ratio,
+            cluster_ids=cluster_ids,
+            cluster_penalty=cluster_penalty,
         )
 
     cand_indices = np.asarray(cand_indices, dtype=np.int64).reshape(-1)
@@ -266,6 +312,12 @@ def mmr_rerank_temporal(
     # Look up freshness for each candidate
     cand_freshness = np.asarray(freshness[cand_indices], dtype=np.float32)
 
+    # 簇感知惩罚
+    use_cluster = cluster_ids is not None and cluster_penalty > 0.0
+    if use_cluster:
+        cand_clusters = np.asarray(cluster_ids[cand_indices], dtype=np.int32)
+        gamma = float(cluster_penalty)
+
     # --- relevance floor ---
     if min_score_ratio > 0.0:
         sim_all = cand_vecs @ q
@@ -275,6 +327,8 @@ def mmr_rerank_temporal(
             cand_indices = cand_indices[keep]
             cand_vecs = cand_vecs[keep]
             cand_freshness = cand_freshness[keep]
+            if use_cluster:
+                cand_clusters = cand_clusters[keep]
             N = int(cand_vecs.shape[0])
 
     k_eff = int(min(int(k), N))
@@ -286,11 +340,17 @@ def mmr_rerank_temporal(
     selected: List[int] = []
     used = np.zeros(N, dtype=bool)
 
+    if use_cluster:
+        selected_cluster_count: dict[int, int] = {}
+
     # Pick the most relevant item first
     first_scores = lam * sim_q + beta_f * cand_freshness
     first = int(np.argmax(first_scores))
     selected.append(first)
     used[first] = True
+    if use_cluster:
+        c = int(cand_clusters[first])
+        selected_cluster_count[c] = selected_cluster_count.get(c, 0) + 1
 
     max_sim = np.zeros(N, dtype=np.float32)
     sum_sim = np.zeros(N, dtype=np.float32)
@@ -308,12 +368,24 @@ def mmr_rerank_temporal(
             redundancy = sum_sim / float(t)
 
         scores = lam * sim_q - (1.0 - lam) * redundancy + beta_f * cand_freshness
+
+        if use_cluster:
+            cluster_pen = np.array(
+                [selected_cluster_count.get(int(cand_clusters[i]), 0)
+                 for i in range(N)],
+                dtype=np.float32,
+            ) / float(t)
+            scores -= gamma * cluster_pen
+
         scores = scores.astype(np.float32, copy=False)
         scores[used] = -np.inf
 
         best = int(np.argmax(scores))
         selected.append(best)
         used[best] = True
+        if use_cluster:
+            c = int(cand_clusters[best])
+            selected_cluster_count[c] = selected_cluster_count.get(c, 0) + 1
 
         sims = cand_vecs @ cand_vecs[best]
         if use_max_redundancy:
